@@ -33,7 +33,7 @@
 | `NIX_INSTALL_URL` | 空 | 覆盖 Nix 安装器地址（直接 `curl \| sh`） |
 | `NIXOS_CONFIG` | `/etc/nixos/configuration.nix` | 若为 `http...` URL，会先下载为配置文件 |
 | `NIXOS_IMPORT` | 空 | 额外 import 的 Nix 文件路径，如 `./host.nix` |
-| `PROVIDER` | 自动探测 | 云厂商标识，如 `digitalocean` / `hetznercloud` / `hostinger` / `lightsail` |
+| `PROVIDER` | 自动探测 | 云厂商标识，如 `digitalocean` / `hetznercloud` / `hostinger` / `tencent` / `lightsail`。腾讯云（CVM/轻量）自动识别为 `tencent`，会额外开启 `ttyS0` 串口控制台 |
 | `doNetConf` | 空 | 非空则运行时生成 `networking.nix`（静态网络场景） |
 | `NO_SWAP` | 空 | 非空则跳过临时 swap 的创建与清理 |
 | `NO_INFECT` | 空 | 非空则只生成配置、不执行安装 |
@@ -80,6 +80,31 @@ nix-channel --list
 nix config show | grep substituters
 nixos-rebuild switch
 ```
+
+## 🐛 排障 / 首次测试建议
+
+脚本在重启前会做一次自检并打印汇总（PROVIDER、引导模式、根设备、ESP、NIXOS_LUSTRATE 内容等）：
+
+- 若 `/etc/NIXOS_LUSTRATE` 为空或缺失 → 直接报错并**中止，不再重启**（避免重启后半死不活）。
+- EFI 下若找不到 `EFI/BOOT/BOOT*.EFI`，或 BIOS 下 GRUB 设备不存在 → 打印 WARNING。
+
+建议首次在**新机器**上分两步走：
+
+```bash
+# 第一步：只安装、不重启，先检查结果
+NO_REBOOT=1 NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh
+
+# 检查安装产物
+cat /etc/NIXOS_LUSTRATE
+cat /etc/nixos/configuration.nix
+ls -l /boot/EFI/BOOT/ 2>/dev/null || ls -l /boot/efi/EFI/BOOT/ 2>/dev/null
+ls -l /nix/var/nix/profiles/system
+
+# 第二步：确认无误后重启，并通过 VNC/串口抓取引导日志
+reboot
+```
+
+重启后若仍无法 SSH，请提供 VNC/串口引导日志（从内核加载到 systemd 报错那一段），以便定位。
 
 ## 🙏 致谢
 

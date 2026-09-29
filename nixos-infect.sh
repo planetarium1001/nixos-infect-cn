@@ -129,6 +129,10 @@ write_nix_conf() {
 autodetectProvider() {
   if [ -e /etc/hetzner-build ]; then
     PROVIDER="hetznercloud"
+  elif [ -e /etc/systemd/system/tat_agent.service ] \
+    || [ -e /usr/local/qcloud ] \
+    || grep -qi tencent /sys/class/dmi/id/sys_vendor 2>/dev/null; then
+    PROVIDER="tencent"
   fi
 }
 
@@ -172,7 +176,7 @@ makeConf() {
 
   local network_import=""
 
-  if [ "$PROVIDER" = "hostinger" ]; then
+  if [ "$PROVIDER" = "hostinger" ] || [ "$PROVIDER" = "tencent" ]; then
     kernel_params=$(cat << EOF
       boot.kernelParams = [
         "console=tty1"
@@ -370,10 +374,12 @@ checkExistingSwap() {
   if [[ -n "$SWAPSHOW" ]]; then
     SWAP_DEVICE="${SWAPSHOW%% *}"
     if [[ "$SWAP_DEVICE" == "/dev/"* ]]; then
+      # 分区 swap：固化到 NixOS 配置里
       zramswap=false
       swapcfg="swapDevices = [ { device = \"${SWAP_DEVICE}\"; } ];"
-      NO_SWAP=true
     fi
+    # 无论分区还是文件 swap，已有 swap 就不需要临时 swap
+    NO_SWAP=true
   fi
 }
 
@@ -406,10 +412,17 @@ findESP() {
       && esp="$(df "$d" --output=source | sed 1d)" \
       && break
   done
-  [[ -z "$esp" ]] && { echo "WARNING: No ESP mount point found"; return 1; }
+  [[ -z "$esp" ]] && { echo "WARNING: No ESP mount point found" >&2; return 1; }
+  local esp_real
+  esp_real="$(readlink -f "$esp")"
+  [[ -z "$esp_real" ]] && { echo "WARNING: 无法解析 ESP 设备 '$esp'" >&2; return 1; }
+  local uuid_real
   for uuid in /dev/disk/by-uuid/*; do
-    [[ $(readlink -f "$uuid") == "$esp" ]] && echo $uuid && return 0
+    uuid_real="$(readlink -f "$uuid")"
+    [[ -n "$uuid_real" && "$uuid_real" == "$esp_real" ]] && echo $uuid && return 0
   done
+  echo "WARNING: ESP ($esp) 未在 /dev/disk/by-uuid 下找到对应设备" >&2
+  return 1
 }
 
 prepareEnv() {
@@ -569,6 +582,49 @@ infect() {
     find $bootFs -depth ! -path $bootFs -exec rm -rf {} +
   fi
   /nix/var/nix/profiles/system/bin/switch-to-configuration boot
+
+  # ===== 重启前自检：把问题暴露在重启之前 =====
+  local failed=0
+
+  if [[ ! -s /etc/NIXOS_LUSTRATE ]]; then
+    echo "ERROR: /etc/NIXOS_LUSTRATE 为空或不存在，接管会失败，重启后将无法进入 NixOS。" >&2
+    failed=1
+  fi
+
+  if isEFI; then
+    local bootefi=""
+    for f in "$bootFs"/EFI/BOOT/BOOTX64.EFI "$bootFs"/EFI/BOOT/BOOTIA32.EFI "$bootFs"/EFI/BOOT/BOOTAA64.EFI; do
+      [[ -e "$f" ]] && bootefi="$f" && break
+    done
+    if [[ -z "$bootefi" ]]; then
+      echo "WARNING: 未在 $bootFs/EFI/BOOT/ 找到可移动引导文件（BOOT*.EFI），固件可能无法引导 NixOS。" >&2
+    else
+      echo "OK: EFI 可移动引导文件 $bootefi"
+    fi
+  else
+    if [[ -e "$grubdev" ]]; then
+      echo "OK: GRUB 设备 $grubdev 存在"
+    else
+      echo "WARNING: GRUB 设备 '$grubdev' 不存在，引导可能失败。" >&2
+    fi
+  fi
+
+  echo "===== nixos-infect 自检汇总 ====="
+  echo "  PROVIDER     : ${PROVIDER:-<unset>}"
+  echo "  引导模式     : $(isEFI && echo EFI || echo BIOS)"
+  echo "  根文件系统   : $rootfsdev ($rootfstype)"
+  echo "  bootFs/esp   : ${bootFs:-<n/a>} / ${esp:-<n/a>}"
+  echo "  grubdev      : ${grubdev:-<n/a>}"
+  echo "  channel      : $NIX_CHANNEL"
+  echo "  substituters : ${MIRROR_TRY[*]:-official}"
+  echo "  NIXOS_LUSTRATE:"
+  sed 's/^/    /' /etc/NIXOS_LUSTRATE 2>/dev/null || true
+  echo "================================"
+
+  if [[ $failed -ne 0 ]]; then
+    echo "ERROR: 自检失败，已中止且不重启，请检查上面的输出。" >&2
+    exit 1
+  fi
 }
 
 if [ ! -v PROVIDER ]; then
