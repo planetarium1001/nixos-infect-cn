@@ -4,6 +4,128 @@
 
 set -e -o pipefail
 
+# ===== 国内镜像配置 =====
+# USTC、TUNA、NJU。
+#   - channel/store：三个镜像都可用
+#   - 安装器（install）：仅 TUNA/NJU 提供，USTC 自动跳过
+# NIX_MIRROR=ustc|tuna|nju|auto|official
+# 显式指定优先镜像，失败后自动尝试其余镜像。
+declare -A MIRROR_BASES=(
+  [ustc]="https://mirrors.ustc.edu.cn"
+  [tuna]="https://mirrors.tuna.tsinghua.edu.cn"
+  [nju]="https://mirror.nju.edu.cn"
+)
+
+MIRROR_ORDER=(tuna ustc nju)
+# 安装器仅 TUNA 和 NJU 提供
+INSTALLER_SUBSET=(tuna nju)
+NIX_MIRROR="${NIX_MIRROR:-auto}"
+NIX_CHANNEL="${NIX_CHANNEL:-nixos-26.05}"
+
+MIRROR_TRY=()
+
+if [[ "$NIX_MIRROR" == "official" ]]; then
+  :
+else
+  if [[ "$NIX_MIRROR" != "auto" ]]; then
+    if [[ -n "${MIRROR_BASES[$NIX_MIRROR]:-}" ]]; then
+      MIRROR_TRY+=("$NIX_MIRROR")
+    else
+      echo "WARNING: 未知 NIX_MIRROR='$NIX_MIRROR'，回退 auto" >&2
+    fi
+  fi
+
+  for m in "${MIRROR_ORDER[@]}"; do
+    [[ " ${MIRROR_TRY[*]} " == *" $m "* ]] || MIRROR_TRY+=("$m")
+  done
+fi
+
+mirror_install_url() {
+  echo "${MIRROR_BASES[$1]}/nix/latest/install"
+}
+
+mirror_channel_url() {
+  echo "${MIRROR_BASES[$1]}/nix-channels/$NIX_CHANNEL"
+}
+
+mirror_store_url() {
+  echo "${MIRROR_BASES[$1]}/nix-channels/store"
+}
+
+install_nix() {
+  if [[ -n "${NIX_INSTALL_URL:-}" ]]; then
+    echo "使用显式 NIX_INSTALL_URL: $NIX_INSTALL_URL"
+    curl -L "$NIX_INSTALL_URL" | sh -s -- --no-channel-add
+    return 0
+  fi
+
+  if [[ ${#MIRROR_TRY[@]} -eq 0 ]]; then
+    echo "使用官方 Nix 安装器"
+    curl -L "https://nixos.org/nix/install" | sh -s -- --no-channel-add
+    return 0
+  fi
+
+  local url
+  for m in "${MIRROR_TRY[@]}"; do
+    # 仅尝试已知提供安装器的镜像（USTC 无安装器）
+    [[ " ${INSTALLER_SUBSET[*]} " == *" $m "* ]] || continue
+    url="$(mirror_install_url "$m")"
+    echo "尝试 Nix 安装器镜像: $m ($url)"
+    if curl -fsSL "$url" | sh -s -- --no-channel-add; then
+      echo "Nix 安装器镜像 $m 成功"
+      return 0
+    fi
+    echo "WARNING: Nix 安装器镜像 $m 失败，尝试下一个" >&2
+  done
+
+  echo "所有镜像失败，回退官方 Nix 安装器" >&2
+  curl -L "https://nixos.org/nix/install" | sh -s -- --no-channel-add
+}
+
+add_nix_channel() {
+  nix-channel --remove nixpkgs || true
+
+  if [[ ${#MIRROR_TRY[@]} -eq 0 ]]; then
+    echo "使用官方 NixOS channel"
+    nix-channel --add "https://nixos.org/channels/$NIX_CHANNEL" nixos
+    nix-channel --update
+    return 0
+  fi
+
+  for m in "${MIRROR_TRY[@]}"; do
+    local url
+    url="$(mirror_channel_url "$m")"
+    echo "尝试 NixOS channel 镜像: $m ($url)"
+    if nix-channel --add "$url" nixos && nix-channel --update; then
+      echo "NixOS channel 镜像 $m 成功"
+      return 0
+    fi
+    echo "WARNING: NixOS channel 镜像 $m 失败，尝试下一个" >&2
+    nix-channel --remove nixos || true
+  done
+
+  echo "所有镜像失败，回退官方 channel" >&2
+  nix-channel --add "https://nixos.org/channels/$NIX_CHANNEL" nixos
+  nix-channel --update
+}
+
+write_nix_conf() {
+  local nix_config=~/.config/nix
+  mkdir -p "$nix_config"
+
+  local substituters=()
+  for m in "${MIRROR_TRY[@]}"; do
+    substituters+=("$(mirror_store_url "$m")")
+  done
+  substituters+=("https://cache.nixos.org")
+
+  {
+    echo "substituters = ${substituters[*]}"
+    echo "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+  } > "$nix_config/nix.conf"
+}
+# ===== 国内镜像配置结束 =====
+
 autodetectProvider() {
   if [ -e /etc/hetzner-build ]; then
     PROVIDER="hetznercloud"
@@ -24,12 +146,30 @@ makeConf() {
   mkdir -p /etc/nixos
   # Prevent grep for sending error code 1 (and halting execution) when no lines are selected : https://www.unix.com/man-page/posix/1P/grep
   local IFS=$'\n'
+
+  local nix_substituters=""
+  for m in "${MIRROR_TRY[@]}"; do
+    nix_substituters+="    \"$(mirror_store_url "$m")\""
+    nix_substituters+=$'\n'
+  done
+  nix_substituters+="    \"https://cache.nixos.org\""
+  nix_substituters+=$'\n'
+
+  local keys=""
+
   for trypath in /root/.ssh/authorized_keys /home/$SUDO_USER/.ssh/authorized_keys $HOME/.ssh/authorized_keys; do
       [[ -r "$trypath" ]] \
       && keys=$(sed -E 's/^[^#].*[[:space:]]((sk-ssh|sk-ecdsa|ssh|ecdsa)-[^[:space:]]+)[[:space:]]+([^[:space:]]+)([[:space:]]*.*)$/\1 \3\4/' "$trypath") \
       && [[ ! -z "$keys" ]] \
       && break
   done
+
+  if [[ -z "${keys:-}" ]]; then
+    echo "ERROR: 未找到任何 SSH 公钥，装完会无法登录。请先 ssh-copy-id。" >&2
+    [[ -z "$NO_SWAP" ]] && removeSwap
+    exit 1
+  fi
+
   local network_import=""
 
   if [ "$PROVIDER" = "hostinger" ]; then
@@ -45,6 +185,12 @@ EOF
     fi
 
   [[ -n "$doNetConf" ]] && network_import="./networking.nix # generated at runtime by nixos-infect"
+
+  local state_version="26.05"
+  if [[ "$NIX_CHANNEL" =~ ^nixos-[0-9]+\.[0-9]+$ ]]; then
+    state_version="${NIX_CHANNEL#nixos-}"
+  fi
+
   cat > /etc/nixos/configuration.nix << EOF
 { ... }: {
   imports = [
@@ -61,12 +207,14 @@ EOF
   networking.hostName = "$(hostname -s)";
   networking.domain = "$(hostname -d)";
   services.openssh.enable = true;
+  nix.settings.substituters = [
+$nix_substituters  ];
   users.users.root.openssh.authorizedKeys.keys = [$(while read -r line; do
     line=$(echo -n "$line" | sed 's/\r//g')
     trimmed_line=$(echo -n "$line" | xargs)
     echo -n "''$trimmed_line'' "
   done <<< "$keys")];
-  system.stateVersion = "23.11";
+  system.stateVersion = "$state_version";
   $kernel_params
 }
 EOF
@@ -370,16 +518,13 @@ infect() {
   # TODO use addgroup and adduser as fallbacks
   #addgroup nixbld -g 30000 || true
   #for i in {1..10}; do adduser -DH -G nixbld nixbld$i || true; done
-  NIX_INSTALL_URL="${NIX_INSTALL_URL:-https://nixos.org/nix/install}"
-  curl -L "${NIX_INSTALL_URL}" | sh -s -- --no-channel-add
+  install_nix
 
   # shellcheck disable=SC1090
   source ~/.nix-profile/etc/profile.d/nix.sh
 
-  [[ -z "$NIX_CHANNEL" ]] && NIX_CHANNEL="nixos-25.11"
-  nix-channel --remove nixpkgs
-  nix-channel --add "https://nixos.org/channels/$NIX_CHANNEL" nixos
-  nix-channel --update
+  add_nix_channel
+  write_nix_conf
 
   if [[ $NIXOS_CONFIG = http* ]]
   then
@@ -426,7 +571,7 @@ infect() {
   /nix/var/nix/profiles/system/bin/switch-to-configuration boot
 }
 
-if [ ! -v $PROVIDER ]; then
+if [ ! -v PROVIDER ]; then
   autodetectProvider
 fi
 
