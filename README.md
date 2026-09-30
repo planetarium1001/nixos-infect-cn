@@ -1,6 +1,6 @@
 # nixos-infect-cn
 
-使用国内镜像源，将云服务器转换为 NixOS。
+使用国内镜像源，将云服务器系统转换为 NixOS。
 
 ![](./screenshots/screenshot.png)
 
