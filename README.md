@@ -22,12 +22,13 @@
 | 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 |
 
 均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，
 安装后 `nix-channel --update` / `nixos-rebuild` 均走国内镜像。
 
-**建议使用上表中已验证的系统版本。** Ubuntu 24.04、Debian 13 未经验证；
+**建议使用上表中已验证的系统版本。** Debian 13 等更新的版本未经验证；
 上游的经验是 LTS 版本稳定，非 LTS（如 22.10、23.10）失败。EFI 引导尚未实测。
 
 ## 快速开始
@@ -51,10 +52,13 @@ curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/ni
 | GitHub 加速 | `https://gh-proxy.com/https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
 | GitHub 原始 | `https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
 
-- jsDelivr 会缓存分支引用，`master` 的更新最长可能延迟数小时生效。
-- **GitHub 原始地址在国内不稳定**，实测经常超时，不建议直接用。
-- Gitee 镜像自动同步自 GitHub，但它会对中文内容较多的文件做风控，`raw` 访问可能返回
-  `451`。遇到时换用上面其他源。
+- jsDelivr 会缓存分支引用，推送后不会立即生效（实测延迟十几分钟）。
+  需要马上拿到最新版，把 `@master` 换成一个 commit id，例如
+  `https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@f0d27a4/nixos-infect.sh`；
+  也可以用 `https://purge.jsdelivr.net/gh/<user>/<repo>@master/<path>` 主动清缓存。
+- Gitee 镜像同步自 GitHub，会有滞后，刚推送完可能还是旧版。
+- **GitHub 原始地址在国内不稳定**，时通时断，不建议直接用。
+- Gitee 还会对中文内容较多的文件做风控，`raw` 访问可能返回 `451`。
 - 管道执行时没有终端，无法交互，所有提问都取默认值。
 
 ## 常用示例
