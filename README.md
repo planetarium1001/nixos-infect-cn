@@ -19,6 +19,7 @@
 
 | 平台 | 原始系统 | 引导 | 结果 |
 | --- | --- | --- | --- |
+| 腾讯云 Lighthouse | Debian 11 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Debian 13 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
@@ -29,7 +30,8 @@
 均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，
 安装后 `nix-channel --update` / `nixos-rebuild` 均走国内镜像。
 
-> 其中 Debian 12 这一台的引导模型和其他不同（宿主机自行解析 `grub.cfg` 直接引导），
+> 其中 Debian 11、12 两台的分区布局与引导模型和其余不同 —— 磁盘是 MBR 单分区，
+> 且宿主机自行解析 `grub.cfg` 直接引导（在 Debian 12 上做过隔离验证）。
 > 详见「宿主机自行引导的平台」一节。
 
 **建议使用上表中已验证的系统版本。** 未列出的版本未经验证；上游的经验是 LTS 版本稳定，
@@ -211,7 +213,7 @@ bash /root/nixos-infect-cleanup.sh
 
 ## 宿主机自行引导的平台
 
-少数镜像（实测腾讯云 Debian 12）的**宿主机自己解析 `/boot/grub/grub.cfg` 并直接引导内核**，
+少数镜像（实测腾讯云 Debian 11 / 12）的**宿主机自己解析 `/boot/grub/grub.cfg` 并直接引导内核**，
 不经过磁盘 GRUB。两个表现：
 
 - VNC / 串口里**看不到 GRUB 菜单**，开机直接进系统
