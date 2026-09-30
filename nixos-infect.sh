@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# nixos-infect-cn v1.0.0
+# nixos-infect-cn 2026-09-30
 # ---------------------------------------------------------------------------
 # 使用国内镜像源把 Debian/Ubuntu 云主机原地转换为 NixOS 的 nixos-infect 中文 fork。
 #
@@ -17,7 +17,8 @@ umask 0022
 # SECTION 1: 常量与全局默认值
 # ===========================================================================
 
-NIXOS_INFECT_CN_VERSION="1.0.0"
+# 版本号用日期：一眼能看出脚本是什么时候更新的，便于判断是否需要重新取用。
+NIXOS_INFECT_CN_VERSION="2026-09-30"
 
 # --- 用户可预置（环境变量不会被脚本重置） ---
 LANG_OPT="${LANG_OPT:-en}"
@@ -1923,6 +1924,7 @@ parse_args() {
 }
 
 show_help() {
+  printf 'nixos-infect-cn %s\n\n' "$NIXOS_INFECT_CN_VERSION"
   cat <<'USAGE'
 Usage: nixos-infect.sh [OPTIONS]
 
@@ -1981,7 +1983,7 @@ main() {
     log_info "dry-run: output directory $CONFIG_DIR"
   fi
 
-  log_step "$(msg title_install) [nixos-infect-cn v$NIXOS_INFECT_CN_VERSION]"
+  log_step "$(msg title_install) [nixos-infect-cn $NIXOS_INFECT_CN_VERSION]"
 
   # 判断是否需要探测
   local need_probe=0
