@@ -20,6 +20,7 @@
 | 平台 | 原始系统 | 引导 | 结果 |
 | --- | --- | --- | --- |
 | 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 13 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 |
@@ -28,8 +29,8 @@
 均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，
 安装后 `nix-channel --update` / `nixos-rebuild` 均走国内镜像。
 
-**建议使用上表中已验证的系统版本。** Debian 13 等更新的版本未经验证；
-上游的经验是 LTS 版本稳定，非 LTS（如 22.10、23.10）失败。EFI 引导尚未实测。
+**建议使用上表中已验证的系统版本。** 未列出的版本未经验证；上游的经验是 LTS 版本稳定，
+非 LTS（如 Ubuntu 22.10、23.10）失败。EFI 引导尚未实测。
 
 ## 快速开始
 

@@ -170,6 +170,7 @@ declare -A MSG_EN=(
   [install_nix_fetch]="Downloading the Nix installer"
   [install_nix_fetch_fail]="Failed to download the Nix installer"
   [install_channel]="Setting up channel"
+  [install_channel_update]="Downloading channel"
   [install_parse_check]="Checking configuration.nix syntax"
   [install_parse_fail]="configuration.nix failed to parse"
   [install_parse_ok]="Syntax OK"
@@ -245,6 +246,7 @@ declare -A MSG_ZH=(
   [install_nix_fetch]="正在下载 Nix 安装器"
   [install_nix_fetch_fail]="下载 Nix 安装器失败"
   [install_channel]="配置 channel"
+  [install_channel_update]="下载 channel"
   [install_parse_check]="检查 configuration.nix 语法"
   [install_parse_fail]="configuration.nix 语法错误"
   [install_parse_ok]="语法正确"
@@ -429,9 +431,14 @@ confirm() {
   printf '%s %s ' "$prompt" "$hint"
   local ans
   read -r ans || ans=""
-  ans=$(printf '%s' "$ans" | tr -d ' ' | tr 'A-Z' 'a-z')
+  # 与清理脚本用同一套判定：去掉所有空白并转小写，回车取默认值。
+  # 只有 y / yes 算同意；n / no 以及任何无法识别的输入都算不同意。
+  ans=$(printf '%s' "$ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
   [ -z "$ans" ] && ans="$default"
-  [ "$ans" = "y" ] || [ "$ans" = "yes" ]
+  case "$ans" in
+    y|yes) return 0 ;;
+    *)     return 1 ;;
+  esac
 }
 
 enter_shell() {
@@ -450,6 +457,31 @@ enter_shell() {
 # ===========================================================================
 # SECTION 4: 通用工具
 # ===========================================================================
+
+# 把 Nix 的一行输出压成适合单行进度显示的形式：
+#   copying path '/nix/store/<32 位 hash>-<名字>' from '...'   ->  copying <名字>
+#   building '/nix/store/<32 位 hash>-<名字>.drv'              ->  building <名字>
+# store 路径的 basename 固定是「32 位 hash + '-' + 名字」，去掉前 33 个字符就是包名，
+# 比原样截断可读得多。最后按可用宽度截断，避免在终端里折行。
+fmt_progress_line() {
+  local line="$1" max="$2" p
+  case "$line" in
+    "copying path '"*)
+      p="${line#copying path \'}"; p="${p%%\'*}"
+      p="${p##*/}"; [ "${#p}" -gt 33 ] && p="${p:33}"
+      line="copying $p"
+      ;;
+    "building '"*)
+      p="${line#building \'}"; p="${p%%\'*}"
+      p="${p##*/}"; [ "${#p}" -gt 33 ] && p="${p:33}"
+      line="building $p"
+      ;;
+  esac
+  if [ "${#line}" -gt "$max" ] && [ "$max" -gt 3 ]; then
+    line="${line:0:$((max - 3))}..."
+  fi
+  printf '%s' "$line"
+}
 
 # 执行一条耗时命令，把它的输出收进日志，终端只留一行实时进度。
 #   - 默认：转轮 + 已用秒数 + 输出的最后一行（下载/构建到哪一步一眼能看到）
@@ -474,13 +506,17 @@ run_quiet() {
   local pid=$!
 
   if [ -t 2 ]; then
+    local cols
+    cols=$(tput cols 2>/dev/null)
+    [ -z "$cols" ] && cols=${COLUMNS:-80}
     while kill -0 "$pid" 2>/dev/null; do
       elapsed=$(( $(date +%s) - start ))
       idx=$(( (idx + 1) % 4 ))
       # 只读文件末尾 4KB；Nix 的下载进度用 \r 刷新，先转成换行再取最后一条
       line=$(tail -c 4096 "$tmplog" 2>/dev/null | tr '\r' '\n' \
-             | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-64)
+             | grep -v '^[[:space:]]*$' | tail -n 1)
       [ -z "$line" ] && line="$label"
+      line=$(fmt_progress_line "$line" $((cols - 16)))
       printf '\r\033[K  %s  %ss  %s' "${spin:$idx:1}" "$elapsed" "$line" >&2
       sleep 1
     done
@@ -1340,13 +1376,48 @@ cfg_generate_networking() {
     "PREDICTABLE_INAMES=$predictable_inames"
 }
 
+# 从生成的 configuration.nix 回读一个 `key = "value"` 形式的值。
+# 交互模式下用户可能手工改过配置，摘要必须按文件的实际内容显示，
+# 否则会出现「改了 hostName 但摘要还显示旧值」这种误导。
+cfg_file_get() {
+  local key="$1" file="$CONFIG_DIR/configuration.nix"
+  [ -r "$file" ] || return 0
+  sed -n "s|^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*|\1|p" "$file" | head -1
+}
+
+# 回读 nix.settings.substituters 列表，返回空格分隔的 URL（形如脚本内的值）
+cfg_file_substituters() {
+  local file="$CONFIG_DIR/configuration.nix"
+  [ -r "$file" ] || return 0
+  awk '
+    /nix\.settings\.substituters[[:space:]]*=[[:space:]]*\[/ { inblk = 1; next }
+    inblk && /\]/ { exit }
+    inblk {
+      sub(/^[[:space:]]*"/, ""); sub(/"[[:space:]]*$/, "")
+      if ($0 != "") printf "%s ", $0
+    }
+  ' "$file"
+}
+
 config_summary() {
+  local hn ch subs
+  # 一律优先读文件，读不到才退回脚本内存里的值
+  hn=$(cfg_file_get 'networking\.hostName')
+  [ -z "$hn" ] && hn=$(hostname -s 2>/dev/null || echo unknown)
+
+  ch=$(cfg_file_get 'system\.defaultChannel')
+  ch="${ch##*/}"
+  [ -z "$ch" ] && ch="$NIX_CHANNEL"
+
+  subs=$(cfg_file_substituters)
+  [ -z "$subs" ] && subs="$NIX_SUBSTITUTERS"
+
   echo ""
   print_title "$(msg config_summary_title)"
-  print_kv "$(msg config_summary_hostname)"     "$(hostname -s 2>/dev/null || echo unknown)"
+  print_kv "$(msg config_summary_hostname)"     "$hn"
   print_kv "$(msg config_summary_keys)"         "$(cfg_count_ssh_keys)"
-  print_kv "$(msg config_summary_channel)"      "$NIX_CHANNEL"
-  print_kv "$(msg config_summary_substituters)" "$NIX_SUBSTITUTERS"
+  print_kv "$(msg config_summary_channel)"      "$ch"
+  print_kv "$(msg config_summary_substituters)" "${subs% }"
   local net_status="DHCP"
   [ -n "$doNetConf" ] && net_status="static (networking.nix)"
   print_kv "$(msg config_summary_networking)"   "$net_status"
@@ -1584,8 +1655,7 @@ setup_channel() {
     log_error "nix-channel --add failed: $NIX_CHANNEL_URL"
     exit 1
   fi
-  if ! nix-channel --update; then
-    log_error "nix-channel --update failed"
+  if ! run_quiet "$(msg install_channel_update)" nix-channel --update; then
     exit 1
   fi
 }
@@ -1985,9 +2055,7 @@ TMPL_CONFIGURATION=$(cat <<'TMPL_EOF'
 
 @@SUBSTITUTERS_BLOCK@@
 
-  # 让 nix-channel / nixos-rebuild --upgrade 也走国内镜像。
-  # 不加这一条的话，NixOS 自带的 nix-channel 模块会在每次开机时用 tmpfiles
-  # 把 /root/.nix-channels 覆盖回官方 channels.nixos.org，安装时设的镜像就丢了。
+  # nix-channel 也走国内镜像
   system.defaultChannel = "@@DEFAULT_CHANNEL@@";
 
   boot.tmp.cleanOnBoot = true;
