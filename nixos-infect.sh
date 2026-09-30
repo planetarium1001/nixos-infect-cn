@@ -1763,6 +1763,17 @@ finalize_nixos() {
     exit 1
   fi
 
+  # 部分平台的宿主机（实测腾讯云部分镜像）自己解析 /boot/grub/grub.cfg 并直接
+  # 引导，但会缓存解析结果，只有 /boot 下的内核文件发生变化时才重新读取。
+  # 于是「改了 grub.cfg 也不生效」—— 重启后宿主机仍按旧的引导项启动原系统。
+  # 动一下这些文件的时间戳即可让缓存失效，强制它重新解析。
+  local kf
+  for kf in /boot/vmlinuz-* /boot/initrd.img-*; do
+    [ -e "$kf" ] || continue
+    touch "$kf" 2>/dev/null || true
+    log_debug "touched $kf to invalidate the host boot cache"
+  done
+
   # 引导扇区（MBR / core.img / grub.cfg）刚写入，必须立刻落盘。
   # 脚本随后就会 reboot，如果还留在页缓存里，重启可能仍走旧的引导状态。
   sync
