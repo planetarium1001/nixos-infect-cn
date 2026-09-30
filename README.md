@@ -10,7 +10,7 @@
 | 上游 | [elitak/nixos-infect](https://github.com/elitak/nixos-infect) |
 | 参考 | [lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn)、[kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b) |
 
-单文件、免构建。安装器、channel、二进制缓存均走国内镜像，无需额外网络配置。
+单文件、免构建。安装器、channel、二进制缓存均使用国内镜像，无需额外网络配置，自动探测最新稳定版。
 
 ## 警告
 
@@ -20,16 +20,22 @@
 
 ## 已验证平台
 
-| 平台 | 原始系统 | 引导 | 结果 | 平台 | 原始系统 | 引导 | 结果 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 腾讯云 Lighthouse | OpenCloudOS 9 | BIOS | 通过 | 腾讯云 Lighthouse | OpenCloudOS 8 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 10.2 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 11.1 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 12.0 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 13.2 | BIOS | 通过 |
+| 平台 | 原始系统 | 引导 | 结果 |
+| --- | --- | --- | --- |
+| 腾讯云 Lighthouse | OpenCloudOS 8 | BIOS | 通过 |
+| 腾讯云 Lighthouse | OpenCloudOS 9 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 | 
+| 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 | 
+| 腾讯云 Lighthouse | Debian 10.2 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 11.1 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 12.0 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 13.2 | BIOS | 通过 |
 
-覆盖腾讯云 Lighthouse 当前可选的 Debian 与 Ubuntu 镜像，均为 KVM + BIOS 实例。  
-转换结果为 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，安装后
+> 测试说明
+> - 覆盖腾讯云 Lighthouse 当前可选的 Debian 与 Ubuntu 镜像，均为 KVM + BIOS 实例。  
+> - 转换结果为 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，安装后
 `nix-channel --update` 与 `nixos-rebuild` 均走国内镜像。
 
 **未列出的系统版本未经验证。** 上游的经验是 LTS 版本稳定，非 LTS（如 Ubuntu 22.10 / 23.10）
