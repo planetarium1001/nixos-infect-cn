@@ -4,7 +4,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | `2026-09-30`（以日期标识，便于判断脚本新旧与是否需要重新取用） |
+| 版本 | `2026-09-30` |
 | 上游 | [elitak/nixos-infect](https://github.com/elitak/nixos-infect) |
 | 参考 | [lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn)、[kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b) |
 
@@ -20,15 +20,16 @@
 
 | 平台 | 原始系统 | 引导 | 结果 |
 | --- | --- | --- | --- |
-| 腾讯云 Lighthouse | Debian 11 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Debian 13 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 10.2 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 11.1 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 12.0 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Debian 13.2 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 |
 
-覆盖腾讯云 Lighthouse 当前可选的全部 Debian 与 Ubuntu 镜像，均为 KVM + BIOS 实例。
+覆盖腾讯云 Lighthouse 当前可选的 Debian 与 Ubuntu 镜像，均为 KVM + BIOS 实例。  
 转换结果为 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，安装后
 `nix-channel --update` 与 `nixos-rebuild` 均走国内镜像。
 
@@ -56,21 +57,21 @@ curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/ni
 | GitHub 加速 | `https://gh-proxy.com/https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
 | GitHub 原始 | `https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
 
-- jsDelivr 会缓存分支引用，推送后不会立即生效（实测延迟十几分钟）。需要马上取到最新版，
-  把 `@master` 换成具体的 commit id，或用 `https://purge.jsdelivr.net/gh/<user>/<repo>@master/<path>` 主动清缓存。
+- jsDelivr 会缓存分支引用，需要马上取到最新版，需把 `@master` 换成具体的 commit id，或用 `https://purge.jsdelivr.net/gh/<user>/<repo>@master/<path>` 主动清缓存。
 - Gitee 镜像同步自 GitHub，推送后会有一段时间仍为旧版。
 - **GitHub 原始地址在国内不稳定**，时通时断，不建议直接使用。
-- Gitee 对中文内容较多的文件有内容审核，`raw` 访问可能返回 `451`。
+- Gitee 对内容较多的文件有内容审核，`raw` 访问可能返回 `451`。
 - 管道执行时没有终端，**无法交互**，所有提问自动取默认值。
 
 ## 修改配置
 
-生成的配置**默认继承原系统**的主机名、域名等信息。如需调整，有以下三种方式。
+生成的配置**默认继承原系统**的主机名、域名等信息。  
+如需调整，有以下三种方式。
 
 ### 方式一：交互模式（推荐）
 
-**修改 `configuration.nix` 等 Nix 文件必须使用交互模式。** 管道执行时没有终端，无法进入编辑
-流程，因此需先下载脚本：
+**修改 `configuration.nix` 等 Nix 文件必须使用交互模式。  
+** 管道执行时没有终端，无法进入编辑流程，因此需先下载脚本：
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh -o nixos-infect.sh
@@ -164,15 +165,15 @@ bash nixos-infect.sh --lang=zh \
 
 | 镜像 | 安装器 | channel | 二进制缓存 |
 | --- | --- | --- | --- |
-| TUNA（清华） | 有 | 有 | 有 |
-| NJU（南大） | 有 | 有 | 有 |
-| BFSU（北外） | 有 | 有 | 有 |
-| USTC（中科大） | 无 | 有 | 有 |
-| SJTUG（上交） | 无 | 有 | 有 |
+| TUNA（清华） | &#10004 | &#10004 | &#10004 |
+| NJU（南大） | &#10004 | &#10004 | &#10004 |
+| BFSU（北外） | &#10004 | &#10004 | &#10004 |
+| USTC（中科大） | &cross | &#10004 | &#10004 |
+| SJTUG（上交） | &cross | &#10004 | &#10004 |
 
-安装器、channel、二进制缓存三个维度独立探测，按实测速度排序。探测结果缓存在
-`/tmp/nixos-infect-cn.probe`，有效期 1 小时。生成的配置中**不会写入 `cache.nixos.org`**
-（由 Nix 自行追加在末尾作为兜底）。
+安装器、channel、二进制缓存三个维度独立探测，按实测速度排序。  
+探测结果缓存在`/tmp/nixos-infect-cn.probe`，有效期 1 小时。  
+生成的配置中**不会写入 `cache.nixos.org`**（由 Nix 自行追加在末尾作为兜底）。
 
 ## 重启之后
 
@@ -193,8 +194,8 @@ bash /root/nixos-infect-cleanup.sh
 
 ### GRUB 菜单等待时间
 
-生成的配置未显式设置 `boot.loader.timeout`，使用 NixOS 默认值 **5 秒**。确认系统能正常启动
-之后，可编辑 `/etc/nixos/configuration.nix` 缩短等待：
+生成的配置未显式设置 `boot.loader.timeout`，使用 NixOS 默认值 **5 秒**。  
+确认系统能正常启动之后，可编辑 `/etc/nixos/configuration.nix` 缩短等待：
 
 ```nix
 boot.loader.timeout = 1;
