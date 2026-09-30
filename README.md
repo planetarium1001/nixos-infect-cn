@@ -1,12 +1,12 @@
 # nixos-infect-cn
 
-使用国内镜像源，将 Debian / Ubuntu 云主机转换为 NixOS。
+使用国内镜像源，将云服务器转换为 NixOS。
 
 ![](./screenshots/screenshot.png)
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | `2026-09-30` |
+| 版本 | `2026-10-01` |
 | 上游 | [elitak/nixos-infect](https://github.com/elitak/nixos-infect) |
 | 参考 | [lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn)、[kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b) |
 
@@ -80,6 +80,7 @@ bash /root/nixos-infect-cleanup.sh
 
 生成的配置**默认继承原系统**的主机名、域名等信息。  
 如需调整，有以下三种方式。
+如果你想配置用户、flake等，也可以通过如下方式自己编写修改配置文件。
 
 ### 方式一：交互模式（推荐）
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# nixos-infect-cn 2026-09-30
+# nixos-infect-cn 2026-10-01
 # ---------------------------------------------------------------------------
-# 使用国内镜像源在 Debian/Ubuntu 云主机覆盖安装 NixOS 
+# 使用国内镜像源在服务器覆盖安装 NixOS 
 # fork 自 https://github.com/elitak/nixos-infect
 #
 # 用法:
@@ -19,7 +19,7 @@ umask 0022
 # ===========================================================================
 
 # 版本号-日期
-NIXOS_INFECT_CN_VERSION="2026-09-30"
+NIXOS_INFECT_CN_VERSION="2026-10-01"
 
 # --- 用户可预置（环境变量不会被脚本重置） ---
 LANG_OPT="${LANG_OPT:-en}"
@@ -2085,7 +2085,6 @@ TMPL_CONFIGURATION=$(cat <<'TMPL_EOF'
 
 @@SUBSTITUTERS_BLOCK@@
 
-  # nix-channel 也走国内镜像
   system.defaultChannel = "@@DEFAULT_CHANNEL@@";
 
   boot.tmp.cleanOnBoot = true;
@@ -2098,7 +2097,6 @@ TMPL_CONFIGURATION=$(cat <<'TMPL_EOF'
   ];
   system.stateVersion = "25.11";
 
-  # 默认预装软件，按需调整
   environment.systemPackages = with pkgs; [
     vim
     git
