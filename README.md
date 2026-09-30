@@ -1,119 +1,231 @@
 # nixos-infect-cn
 
-> ！作者注：这是使用AI辅助修改的第一版，还未在真实机器上完整测试，待测试结束以后再优化和定稿方案！
+使用**国内镜像源**，把 Debian / Ubuntu 云主机原地转换为 NixOS。
 
-> 在国内云服务器上一键把 Debian/Ubuntu 转换为 NixOS，内置 USTC/TUNA/NJU 镜像，优先镜像可显式指定，其余自动回退。
+[elitak/nixos-infect](https://github.com/elitak/nixos-infect) 的中文 fork。单文件、免构建，
+安装器、channel、二进制缓存全部走国内镜像，无需额外网络配置。
 
-本项目 fork 自 [elitak/nixos-infect](https://github.com/elitak/nixos-infect)，并参考了 [kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b) 的 TUNA 补丁思路。
+- 版本：v1.0.0
+- 国内仓库：[gitee.com/planetarium1001/nixos-infect-cn](https://gitee.com/planetarium1001/nixos-infect-cn)
+  （自动同步自 GitHub，**国内请优先用它**）
+- 参考：[lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn)、
+  [kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b)
 
-## ⚠️ 警告
+## 警告
 
-- **会清空服务器磁盘**，请只在全新、无数据的机器上运行。
-- **必须配置 SSH 密钥登录**，安装后 root 没有密码。
-- 面向 **Debian 12** 及腾讯云轻量、阿里云 ECS 等 KVM 实例（尚未实测）。
-- 网络默认识别 DHCP 实例；若实例使用静态 IP 且不在内置 provider 列表（DigitalOcean / Servarica / Hetzner Cloud / Webdock / Layer7 / Hostinger），需运行时加 `doNetConf=y` 或手动补 `networking.nix`。
-- 不支持 OpenVZ/LXC。
-- 作者不对数据丢失、服务器失联负责。
+- **会清空服务器磁盘**，只在新机器上运行。
+- **必须先配置好 SSH 公钥登录**，转换后 root 没有密码。
+- 不支持 OpenVZ / LXC 等共享内核虚拟化。
 
-## ✨ 特性
+## 已验证平台
 
-- 国内 VPS 一键转 NixOS。
-- 只使用 USTC、TUNA、NJU 三个国内镜像。
-- 安装器（install）仅走 TUNA/NJU（USTC 不提供安装器，自动跳过）。
-- NixOS channel 与二进制缓存（substituters）三家镜像均可用。
-- `NIX_MIRROR` 显式指定优先镜像，失败后自动尝试其余镜像，全部失败回退官方源。
-- 安装后镜像配置持久化到 `/etc/nixos/configuration.nix`。
+| 平台 | 原始系统 | 引导 | 结果 |
+| --- | --- | --- | --- |
+| 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
 
-## 🔧 环境变量
+均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留。
+
+**建议直接使用上表中的系统版本。** Ubuntu 24.04 / Debian 13 等更新的版本未经验证 ——
+上游的经验是 LTS 版本稳定，非 LTS（如 22.10、23.10）失败。EFI 引导也尚未实测。
+
+## 快速开始
+
+```bash
+# 1. 先确保能用密钥登录（转换后 root 没有密码）
+ssh-copy-id root@<服务器IP>
+
+# 2. 一键转换（中文输出，全自动）
+curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh | bash -s -- --lang=zh
+```
+
+脚本会自动探测国内镜像、生成配置、安装 NixOS，完成后自动重启。
+
+> 走 GitHub 的话，把地址换成
+> `https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh`。
+> 需要注意管道执行时无法交互，所有提问都会取默认值。
+
+## 常用示例
+
+快速开始里那条管道命令就是推荐用法。需要改参数时，追加到 `bash -s --` 后面即可：
+
+```bash
+curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh | bash -s -- --lang=zh --no-probe
+```
+
+下面这些例子假设脚本已经下载到本地。**交互模式必须下载到本地再用**，管道执行时没有终端。
+
+**先下载再执行**
+
+```bash
+curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh -o nixos-infect.sh
+bash nixos-infect.sh --lang=zh
+```
+
+**英文输出**
+
+```bash
+bash nixos-infect.sh --lang=en
+```
+
+**交互模式，自己挑镜像**（需要终端，可编辑生成的配置）
+
+```bash
+bash nixos-infect.sh --interactive --lang=zh
+```
+
+**不探测，直接用保底顺序**（最快，TUNA → NJU → BFSU → USTC → SJTUG）
+
+```bash
+bash nixos-infect.sh --no-probe --lang=zh
+```
+
+**指定优先镜像**
+
+```bash
+bash nixos-infect.sh --prefer=NJU --lang=zh
+```
+
+**先安装不重启，检查无误再重启**
+
+```bash
+bash nixos-infect.sh --no-reboot --lang=zh
+```
+
+**用外部模板覆盖配置**
+
+```bash
+bash nixos-infect.sh --lang=zh \
+  --template=configuration:/root/my-configuration.nix \
+  --template=networking:/root/my-networking.nix
+```
+
+**改用 GitHub 源**（Gitee 不通时）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh | bash -s -- --lang=zh
+```
+
+## 重启之后
+
+```bash
+ssh root@<服务器IP>          # 用原来的密钥即可，host key 会保留
+nixos-version                # 预期 25.11 (Xantusia)
+nix-channel --list           # 应指向国内镜像，而不是 channels.nixos.org
+nix config show | grep substituters
+```
+
+确认一切正常后，清理旧系统残留（会交互确认删除 `/old-root`，可释放数 GB）：
+
+```bash
+bash /root/nixos-infect-cleanup.sh
+```
+
+## 参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `--lang=en\|zh` | 输出语言，默认 `en` |
+| `--interactive` | 交互模式：挑镜像、编辑配置。需要终端 |
+| `--auto` | 全自动，默认 |
+| `--yes` | 跳过确认提示（仅交互模式下有提示） |
+| `--verbose` | 打印 debug 日志 |
+| `--no-color` | 关闭颜色 |
+| `--skip-probe` | 复用 1 小时内的探测缓存，无缓存时询问是否重测 |
+| `--no-probe` | 不探测，直接用保底顺序 |
+| `--fast` | 快速探测，每个镜像只测 1 轮（默认 3 轮取中位数） |
+| `--prefer=NAME` | 优先镜像：`TUNA` `NJU` `BFSU` `USTC` `SJTUG` |
+| `--channel=CHANNEL` | 指定 NixOS channel，默认自动探测最新稳定版 |
+| `--template=TYPE:PATH` | 用外部模板覆盖内置模板，可重复。`TYPE` = `configuration` / `hardware` / `networking` |
+| `--networking` | 强制生成 `networking.nix`（静态 IP） |
+| `--no-networking` | 禁止生成 `networking.nix` |
+| `--dry-run` | 只探测 + 生成配置，不安装，输出到 `/tmp/nixos-infect-dryrun` |
+| `--no-infect` | 只做准备，不安装 |
+| `--no-reboot` | 安装后不重启 |
+| `--no-swap` | 不创建临时 swap |
+
+完整说明见 `bash nixos-infect.sh --help`。
+
+## 环境变量
+
+显式设置的值优先级高于探测结果。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `NIX_MIRROR` | `auto` | `ustc`/`tuna`/`nju` 指定优先镜像；`auto` 用内置顺序 TUNA → USTC → NJU；`official` 完全走官方源 |
-| `NIX_CHANNEL` | `nixos-26.05` | NixOS channel 名，同时决定生成的 `system.stateVersion` |
-| `NIX_INSTALL_URL` | 空 | 覆盖 Nix 安装器地址（直接 `curl \| sh`） |
-| `NIXOS_CONFIG` | `/etc/nixos/configuration.nix` | 若为 `http...` URL，会先下载为配置文件 |
-| `NIXOS_IMPORT` | 空 | 额外 import 的 Nix 文件路径，如 `./host.nix` |
-| `PROVIDER` | 自动探测 | 云厂商标识，如 `digitalocean` / `hetznercloud` / `hostinger` / `tencent` / `lightsail`。腾讯云（CVM/轻量）自动识别为 `tencent`，会额外开启 `ttyS0` 串口控制台 |
-| `doNetConf` | 空 | 非空则运行时生成 `networking.nix`（静态网络场景） |
-| `NO_SWAP` | 空 | 非空则跳过临时 swap 的创建与清理 |
-| `NO_INFECT` | 空 | 非空则只生成配置、不执行安装 |
-| `NO_REBOOT` | 空 | 非空则安装完不自动重启 |
+| `NIX_INSTALL_URL` | 自动探测 | Nix 安装器 URL |
+| `NIX_CHANNEL` | 自动探测 | NixOS channel，如 `nixos-25.11` |
+| `NIX_CHANNEL_URL` | 自动探测 | channel tarball URL |
+| `NIX_SUBSTITUTERS` | 自动探测 | 空格分隔，自动去重并过滤 `cache.nixos.org` |
+| `CONFIG_DIR` | `/etc/nixos` | 配置输出目录 |
+| `LOG_FILE` | `/var/log/nixos-infect.log` | 日志文件，不可写时自动关闭 |
+| `NO_REBOOT` / `NO_SWAP` / `NO_INFECT` | 空 | 非空则生效，含义同同名参数 |
 
-## 🚀 快速开始
+## 镜像与探测
 
-重装为 Debian 12，配置 SSH 密钥：
+保底顺序：**TUNA → NJU → BFSU → USTC → SJTUG**。
 
-```bash
-ssh-copy-id root@<服务器IP>
-```
+| 镜像 | 安装器 | channel | 二进制缓存 |
+| --- | --- | --- | --- |
+| TUNA（清华） | 有 | 有 | 有 |
+| NJU（南大） | 有 | 有 | 有 |
+| BFSU（北外） | 有 | 有 | 有 |
+| USTC（中科大） | 无 | 有 | 有 |
+| SJTUG（上交） | 无 | 有 | 有 |
 
-下载脚本：
+安装器、channel、二进制缓存三个维度独立探测，按实测速度排序。
+探测结果缓存在 `/tmp/nixos-infect-cn.probe`，TTL 1 小时。
 
-```bash
-curl -L https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh -o nixos-infect.sh
-# 国内网络可走加速：
-# curl -L https://ghproxy.net/https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh -o nixos-infect.sh
-chmod +x nixos-infect.sh
-```
+生成的配置里**不会写入 `cache.nixos.org`**（Nix 会自动追加在最后作为兜底）。
 
-运行（默认 `auto`，即 TUNA 优先）：
+## 模板自定义
 
-```bash
-NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh
-```
+内置四份模板（`configuration`、EFI / BIOS 的 `hardware`、`networking`），
+占位符为 `@@NAME@@`。两种改法：
 
-指定优先镜像：
+- 用 `--template=TYPE:PATH` 指定外部文件，占位符可保留（会被替换）也可删掉写成静态内容
+- 直接编辑脚本的 `SECTION 11`
 
-```bash
-NIX_MIRROR=tuna     NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh  # TUNA
-NIX_MIRROR=nju      NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh  # NJU
-NIX_MIRROR=ustc     NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh  # USTC（安装器自动回退 TUNA/NJU）
-NIX_MIRROR=official NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh  # 完全走官方源
-```
+`configuration` 可用占位符：`@@HOSTNAME@@` `@@DOMAIN@@` `@@ZRAM@@` `@@NETWORK_IMPORT@@`
+`@@SUBSTITUTERS_BLOCK@@` `@@DEFAULT_CHANNEL@@` `@@AUTHORIZED_KEYS@@`
 
-完成后会自动重启。
+## 已知限制
 
-## 🔧 安装后
+- 管道执行（`curl | bash`）时无法交互，所有提问自动取默认值。
+- EFI 引导未实测，目前只在 BIOS + GRUB 上验证过。
+- Ubuntu 24.04 及更新的版本未测试。
+- 清理脚本的 `/old-root` 需要手动确认删除。
 
-```bash
-nix-channel --list
-nix config show | grep substituters
-nixos-rebuild switch
-```
+## 排障
 
-## 🐛 排障 / 首次测试建议
+安装前脚本会自检并打印引导模式、根设备、`NIXOS_LUSTRATE` 内容等。
+若 `NIXOS_LUSTRATE` 为空或缺失会直接中止、不重启，避免重启后半死不活。
 
-脚本在重启前会做一次自检并打印汇总（PROVIDER、引导模式、根设备、ESP、NIXOS_LUSTRATE 内容等）：
-
-- 若 `/etc/NIXOS_LUSTRATE` 为空或缺失 → 直接报错并**中止，不再重启**（避免重启后半死不活）。
-- EFI 下若找不到 `EFI/BOOT/BOOT*.EFI`，或 BIOS 下 GRUB 设备不存在 → 打印 WARNING。
-
-建议首次在**新机器**上分两步走：
+首次在新机器上建议分两步：
 
 ```bash
-# 第一步：只安装、不重启，先检查结果
-NO_REBOOT=1 NIX_CHANNEL=nixos-26.05 bash -x nixos-infect.sh
-
-# 检查安装产物
+# 第一步：只安装、不重启，检查产物
+bash nixos-infect.sh --no-reboot --lang=zh
 cat /etc/NIXOS_LUSTRATE
 cat /etc/nixos/configuration.nix
-ls -l /boot/EFI/BOOT/ 2>/dev/null || ls -l /boot/efi/EFI/BOOT/ 2>/dev/null
 ls -l /nix/var/nix/profiles/system
 
-# 第二步：确认无误后重启，并通过 VNC/串口抓取引导日志
+# 第二步：确认无误后重启
 reboot
 ```
 
-重启后若仍无法 SSH，请提供 VNC/串口引导日志（从内核加载到 systemd 报错那一段），以便定位。
+重启后若无法 SSH，请提供 VNC / 串口引导日志。日志在 `/var/log/nixos-infect.log`，
+加 `--verbose` 可同时打印到屏幕。
 
-## 🙏 致谢
+## 致谢
 
-- [elitak/nixos-infect](https://github.com/elitak/nixos-infect)
-- [kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b)
-- USTC、TUNA、NJU 镜像站
+- [elitak/nixos-infect](https://github.com/elitak/nixos-infect) —— 上游项目
+- [lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn) —— 参考实现
+- [kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b) —— TUNA 补丁思路
+- TUNA、NJU、BFSU、USTC、SJTUG 镜像站
 
-> 上游原始 README 见 [README.upstream.md](./README.upstream.md)。
+上游原始 README 见 [README.upstream.md](./README.upstream.md)。
 
-## 📄 License
+## License
 
-[GNU General Public License v3.0](./LICENSE)，与上游 elitak/nixos-infect 保持一致。
+[GNU General Public License v3.0](./LICENSE)，与上游保持一致。
