@@ -178,6 +178,8 @@ declare -A MSG_EN=(
   [install_write_conf]="Writing /etc/nix/nix.conf"
   [install_build]="Building system closure"
   [install_finalize]="Staging NixOS takeover"
+  [install_grub]="Installing the boot loader"
+  [install_grub_fail]="Boot loader installation failed; the machine may not boot NixOS"
   [install_finalize_skip]="System already taken over, skipping finalize"
   [install_done]="Installation complete"
   [install_reboot]="Rebooting into NixOS"
@@ -254,6 +256,8 @@ declare -A MSG_ZH=(
   [install_write_conf]="写入 /etc/nix/nix.conf"
   [install_build]="构建系统闭包"
   [install_finalize]="准备 NixOS 接管"
+  [install_grub]="安装引导程序"
+  [install_grub_fail]="引导程序安装失败，机器可能无法启动 NixOS"
   [install_finalize_skip]="系统已被接管，跳过 finalize"
   [install_done]="安装完成"
   [install_reboot]="即将重启进入 NixOS"
@@ -1751,7 +1755,17 @@ finalize_nixos() {
     find /boot -depth ! -path /boot -exec rm -rf {} + 2>/dev/null || true
   fi
 
-  /nix/var/nix/profiles/system/bin/switch-to-configuration boot
+  # 引导程序安装（updating GRUB 2 menu / installing the GRUB 2 boot loader /
+  # Installation finished）交给 run_quiet 收成一行，与其他步骤格式一致。
+  if ! run_quiet "$(msg install_grub)" \
+       /nix/var/nix/profiles/system/bin/switch-to-configuration boot; then
+    log_error "$(msg install_grub_fail)"
+    exit 1
+  fi
+
+  # 引导扇区（MBR / core.img / grub.cfg）刚写入，必须立刻落盘。
+  # 脚本随后就会 reboot，如果还留在页缓存里，重启可能仍走旧的引导状态。
+  sync
 }
 
 # ===========================================================================
@@ -2030,6 +2044,8 @@ main() {
   log_info "  bash $CLEANUP_SCRIPT"
 
   if [ -z "$NO_REBOOT" ]; then
+    # 再兜一次：确保所有待写数据（含引导扇区）已经落盘再重启
+    sync
     log_step "$(msg install_reboot)"
     reboot
   fi
