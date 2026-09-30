@@ -1,6 +1,6 @@
 # nixos-infect-cn
 
-使用国内镜像源，将 Debian / Ubuntu 云主机原地转换为 NixOS。
+使用国内镜像源，将 Debian / Ubuntu 云主机转换为 NixOS。
 
 | 项目 | 内容 |
 | --- | --- |
@@ -70,8 +70,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/ni
 
 ### 方式一：交互模式（推荐）
 
-**修改 `configuration.nix` 等 Nix 文件必须使用交互模式。  
-** 管道执行时没有终端，无法进入编辑流程，因此需先下载脚本：
+**修改 `configuration.nix` 等 Nix 文件必须使用交互模式。**  
+管道执行时没有终端，无法进入编辑流程，因此需先下载脚本：
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh -o nixos-infect.sh
