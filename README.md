@@ -6,8 +6,6 @@
 安装器、channel、二进制缓存全部走国内镜像，无需额外网络配置。
 
 - 版本：v1.0.0
-- 国内仓库：[gitee.com/planetarium1001/nixos-infect-cn](https://gitee.com/planetarium1001/nixos-infect-cn)
-  （自动同步自 GitHub，**国内请优先用它**）
 - 参考：[lzc256/nixos-infect-cn](https://github.com/lzc256/nixos-infect-cn)、
   [kidonng/nixos-infect-tuna](https://gist.github.com/kidonng/852ea559816420acaf33017c6e7ccf8b)
 
@@ -24,11 +22,13 @@
 | 腾讯云 Lighthouse | Debian 12 | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
 | 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 |
 
-均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留。
+均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，
+安装后 `nix-channel --update` / `nixos-rebuild` 均走国内镜像。
 
-**建议直接使用上表中的系统版本。** Ubuntu 24.04 / Debian 13 等更新的版本未经验证 ——
-上游的经验是 LTS 版本稳定，非 LTS（如 22.10、23.10）失败。EFI 引导也尚未实测。
+**建议使用上表中已验证的系统版本。** Ubuntu 24.04、Debian 13 未经验证；
+上游的经验是 LTS 版本稳定，非 LTS（如 22.10、23.10）失败。EFI 引导尚未实测。
 
 ## 快速开始
 
@@ -37,21 +37,32 @@
 ssh-copy-id root@<服务器IP>
 
 # 2. 一键转换（中文输出，全自动）
-curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh | bash -s -- --lang=zh
+curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh | bash -s -- --lang=zh
 ```
 
 脚本会自动探测国内镜像、生成配置、安装 NixOS，完成后自动重启。
 
-> 走 GitHub 的话，把地址换成
-> `https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh`。
-> 需要注意管道执行时无法交互，所有提问都会取默认值。
+### 下载源
+
+| 源 | 地址 |
+| --- | --- |
+| jsDelivr（推荐） | `https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh` |
+| Gitee 镜像 | `https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh` |
+| GitHub 加速 | `https://gh-proxy.com/https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
+| GitHub 原始 | `https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh` |
+
+- jsDelivr 会缓存分支引用，`master` 的更新最长可能延迟数小时生效。
+- **GitHub 原始地址在国内不稳定**，实测经常超时，不建议直接用。
+- Gitee 镜像自动同步自 GitHub，但它会对中文内容较多的文件做风控，`raw` 访问可能返回
+  `451`。遇到时换用上面其他源。
+- 管道执行时没有终端，无法交互，所有提问都取默认值。
 
 ## 常用示例
 
 快速开始里那条管道命令就是推荐用法。需要改参数时，追加到 `bash -s --` 后面即可：
 
 ```bash
-curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh | bash -s -- --lang=zh --no-probe
+curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh | bash -s -- --lang=zh --no-probe
 ```
 
 下面这些例子假设脚本已经下载到本地。**交互模式必须下载到本地再用**，管道执行时没有终端。
@@ -59,7 +70,7 @@ curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-in
 **先下载再执行**
 
 ```bash
-curl -fsSL https://gitee.com/planetarium1001/nixos-infect-cn/raw/master/nixos-infect.sh -o nixos-infect.sh
+curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/nixos-infect.sh -o nixos-infect.sh
 bash nixos-infect.sh --lang=zh
 ```
 
@@ -101,10 +112,11 @@ bash nixos-infect.sh --lang=zh \
   --template=networking:/root/my-networking.nix
 ```
 
-**改用 GitHub 源**（Gitee 不通时）
+**换用其他下载源**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh | bash -s -- --lang=zh
+# 例：走 GitHub 加速代理
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/planetarium1001/nixos-infect-cn/master/nixos-infect.sh | bash -s -- --lang=zh
 ```
 
 ## 重启之后
@@ -130,7 +142,7 @@ bash /root/nixos-infect-cleanup.sh
 | `--interactive` | 交互模式：挑镜像、编辑配置。需要终端 |
 | `--auto` | 全自动，默认 |
 | `--yes` | 跳过确认提示（仅交互模式下有提示） |
-| `--verbose` | 打印 debug 日志 |
+| `--verbose` | 打印 debug 日志，并原样输出安装器与 Nix 的完整过程 |
 | `--no-color` | 关闭颜色 |
 | `--skip-probe` | 复用 1 小时内的探测缓存，无缓存时询问是否重测 |
 | `--no-probe` | 不探测，直接用保底顺序 |

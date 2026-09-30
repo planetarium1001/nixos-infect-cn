@@ -107,29 +107,23 @@ log_debug() {
 # ---------------------------------------------------------------------------
 declare -A MSG_EN=(
   # 标题
-  [title_probe]="Nix Mirror Probe"
   [title_summary]="Probe Summary"
   [title_interactive]="Interactive Configuration"
-  [title_config]="NixOS Configuration"
   [title_install]="Installation"
   # 通用
   [ok]="OK"
   [not_found]="NOT_FOUND"
-  [na]="N/A"
   [official]="official"
   [default]="default"
   [noninteractive]="non-interactive"
   [default_order]="Default order"
   [hint_single]="single choice"
   [hint_multi]="multiple, ordered"
-  [yes]="yes"
-  [no]="no"
-  [cancelled]="Cancelled"
-  [aborted]="Aborted"
+  [run_done]="%s: done in %ss"
+  [run_failed]="%s: failed, last 30 lines below"
   # 探测
   [probe_no_curl]="Error: curl is required. Please install it first."
   [probe_running]="Probing mirrors, this may take a moment..."
-  [probe_done]="Probe complete."
   [probe_fallback]="Using fallback mirror order: TUNA, NJU, BFSU, USTC, SJTUG"
   [probe_cache_hit]="Reusing cached probe results (age: %s s)."
   [probe_cache_miss]="No probe cache found."
@@ -171,14 +165,14 @@ declare -A MSG_EN=(
   [networking_forced_off]="networking.nix generation disabled by --no-networking"
   [networking_no_data]="Cannot read interface/IP address (name='%s'); refusing to generate an empty networking.nix"
   # 安装
-  [install_start]="Starting NixOS installation"
   [install_nix]="Installing Nix"
   [install_nix_skip]="Nix already installed, skipping installer download"
+  [install_nix_fetch]="Downloading the Nix installer"
+  [install_nix_fetch_fail]="Failed to download the Nix installer"
   [install_channel]="Setting up channel"
   [install_parse_check]="Checking configuration.nix syntax"
   [install_parse_fail]="configuration.nix failed to parse"
   [install_parse_ok]="Syntax OK"
-  [install_semantic_fail]="NixOS evaluation failed"
   [install_log_hint]="Full error written to"
   [install_write_conf]="Writing /etc/nix/nix.conf"
   [install_build]="Building system closure"
@@ -192,27 +186,21 @@ declare -A MSG_EN=(
 )
 
 declare -A MSG_ZH=(
-  [title_probe]="Nix 镜像站探测"
   [title_summary]="探测结果汇总"
   [title_interactive]="交互式配置"
-  [title_config]="NixOS 配置"
   [title_install]="安装"
   [ok]="OK"
   [not_found]="NOT_FOUND"
-  [na]="N/A"
   [official]="官方"
   [default]="默认"
   [noninteractive]="非交互"
   [default_order]="默认顺序"
   [hint_single]="单选"
   [hint_multi]="多选，按优先级排序"
-  [yes]="是"
-  [no]="否"
-  [cancelled]="已取消"
-  [aborted]="已中止"
+  [run_done]="%s：完成，用时 %s 秒"
+  [run_failed]="%s：失败，末尾 30 行如下"
   [probe_no_curl]="错误：需要 curl，请先安装。"
   [probe_running]="正在探测镜像站，请稍候……"
-  [probe_done]="探测完成。"
   [probe_fallback]="使用保底镜像顺序：TUNA、NJU、BFSU、USTC、SJTUG"
   [probe_cache_hit]="复用缓存探测结果（%s 秒前）。"
   [probe_cache_miss]="未找到探测缓存。"
@@ -252,14 +240,14 @@ declare -A MSG_ZH=(
   [networking_forced_on]="已通过 --networking 强制生成 networking.nix"
   [networking_forced_off]="已通过 --no-networking 禁止生成 networking.nix"
   [networking_no_data]="无法读取网卡或 IP 地址（name='%s'），拒绝生成空的 networking.nix"
-  [install_start]="开始安装 NixOS"
   [install_nix]="安装 Nix"
   [install_nix_skip]="Nix 已安装，跳过安装器下载"
+  [install_nix_fetch]="正在下载 Nix 安装器"
+  [install_nix_fetch_fail]="下载 Nix 安装器失败"
   [install_channel]="配置 channel"
   [install_parse_check]="检查 configuration.nix 语法"
   [install_parse_fail]="configuration.nix 语法错误"
   [install_parse_ok]="语法正确"
-  [install_semantic_fail]="NixOS 求值失败"
   [install_log_hint]="详细日志已写入"
   [install_write_conf]="写入 /etc/nix/nix.conf"
   [install_build]="构建系统闭包"
@@ -462,6 +450,61 @@ enter_shell() {
 # ===========================================================================
 # SECTION 4: 通用工具
 # ===========================================================================
+
+# 执行一条耗时命令，把它的输出收进日志，终端只留一行实时进度。
+#   - 默认：转轮 + 已用秒数 + 输出的最后一行（下载/构建到哪一步一眼能看到）
+#   - VERBOSE=1：不拦截，原样透传所有输出
+#   - stderr 不是终端时：不画转轮，避免把控制字符写进管道和日志
+# 用法: run_quiet "描述" cmd [args...]
+# 退出码与被执行命令一致。
+run_quiet() {
+  local label="$1"; shift
+  local tmplog rc start elapsed line idx=0 spin='-\|/'
+
+  # 被包装的都是非交互命令，stdin 一律钉在 /dev/null：
+  # 否则在 `curl | bash` 下子进程可能把脚本自身的剩余内容读走。
+  if [ "$VERBOSE" = "1" ]; then
+    "$@" </dev/null
+    return $?
+  fi
+
+  tmplog=$(mktemp) || { "$@" </dev/null; return $?; }
+  start=$(date +%s)
+  "$@" >"$tmplog" 2>&1 </dev/null &
+  local pid=$!
+
+  if [ -t 2 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      elapsed=$(( $(date +%s) - start ))
+      idx=$(( (idx + 1) % 4 ))
+      # 只读文件末尾 4KB；Nix 的下载进度用 \r 刷新，先转成换行再取最后一条
+      line=$(tail -c 4096 "$tmplog" 2>/dev/null | tr '\r' '\n' \
+             | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-64)
+      [ -z "$line" ] && line="$label"
+      printf '\r\033[K  %s  %ss  %s' "${spin:$idx:1}" "$elapsed" "$line" >&2
+      sleep 1
+    done
+    printf '\r\033[K' >&2
+  fi
+
+  wait "$pid"; rc=$?
+  elapsed=$(( $(date +%s) - start ))
+
+  if [ "$rc" = "0" ]; then
+    log_info "$(msg_fmt run_done "$label" "$elapsed")"
+  else
+    log_error "$(msg_fmt run_failed "$label")"
+    tail -n 30 "$tmplog" >&2 2>/dev/null || true
+  fi
+
+  # 完整输出落进日志文件（LOG_FILE 不可写时 _LOG_DISABLED 已置 1）
+  if [ "${_LOG_DISABLED:-0}" != "1" ] && [ -n "$LOG_FILE" ]; then
+    { echo "===== $(date '+%F %T') $label ====="; cat "$tmplog"; } \
+      >> "$LOG_FILE" 2>/dev/null || true
+  fi
+  rm -f "$tmplog"
+  return "$rc"
+}
 
 # 规范化 substituters：过滤 cache.nixos.org，去重
 normalize_substituters() {
@@ -1507,11 +1550,24 @@ install_nix() {
       -s "$(command -v nologin || echo /usr/sbin/nologin)" "nixbld$i" 2>/dev/null || true
   done
 
-  log_debug "downloading installer from $NIX_INSTALL_URL"
-  if ! curl -fsSL "$NIX_INSTALL_URL" | sh -s -- --no-channel-add; then
-    log_error "Nix installation failed"
+  # 先把安装器脚本取下来再执行：这样 curl 的进度条和安装器自身的输出
+  # 不会混在一起，两段各自有清晰的提示。
+  log_info "$(msg install_nix_fetch)"
+  local installer
+  installer=$(mktemp) || { log_error "$(msg install_nix_fetch_fail)"; exit 1; }
+  if ! curl -fsSL -o "$installer" "$NIX_INSTALL_URL"; then
+    log_error "$(msg install_nix_fetch_fail)"
+    log_error "  $NIX_INSTALL_URL"
+    rm -f "$installer"
     exit 1
   fi
+  log_debug "installer downloaded from $NIX_INSTALL_URL"
+
+  if ! run_quiet "$(msg install_nix)" sh "$installer" --no-channel-add; then
+    rm -f "$installer"
+    exit 1
+  fi
+  rm -f "$installer"
 
   # shellcheck disable=SC1090
   source "$HOME/.nix-profile/etc/profile.d/nix.sh" || {
@@ -1561,22 +1617,16 @@ semantic_check_loop() {
   nixos_config_path="$CONFIG_DIR/configuration.nix"
 
   while :; do
-    local err
-    if err=$(nix-env --set \
+    # 用 run_quiet 跑：终端能看到下载/构建到哪一步，完整输出同时落进日志。
+    if run_quiet "$(msg install_build)" nix-env --set \
         -I "nixpkgs=$nixpkgs_path" \
         -I "nixos-config=$nixos_config_path" \
         -f '<nixpkgs/nixos>' \
         -p /nix/var/nix/profiles/system \
-        -A system 2>&1 >/dev/null); then
+        -A system; then
       return 0
     fi
-    log_error "$(msg install_semantic_fail)"
-    {
-      echo "===== $(date) nix-env error ====="
-      echo "$err"
-    } >> "$LOG_FILE" 2>/dev/null || true
     printf '%s %s\n' "$(msg install_log_hint)" "$LOG_FILE" >&2
-    printf '%s\n' "$err" | head -30 >&2 || true
     enter_shell || { log_error "$(msg_fmt install_fix_config "$nixos_config_path")"; exit 1; }
   done
 }
@@ -1678,11 +1728,14 @@ if [ -d /old-root ]; then
   echo "This contains the previous distribution's files."
   echo "If you have verified NixOS boots and runs correctly, it is safe to remove."
   # read 在 EOF 时会返回非零，set -e 下会直接终止脚本，
-  # 导致后面的 GC 和自删都不执行；这里必须兜住，且默认保持不删。
+  # 导致后面的 GC 和自删都不执行；这里必须兜住。
   ans=""
   read -rp "Remove /old-root? [y/N] " ans || ans=""
+  # 归一化：去掉所有空白并转小写，这样 " y "、"YES"、"Yes" 都能识别。
+  # 只有 y / yes 才删除；回车、n / no，以及任何无法识别的输入一律保留。
+  ans=$(printf '%s' "$ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
   case "$ans" in
-    [yY]|[yY][eE][sS])
+    y|yes)
       echo "Removing /old-root ..."
       rm -rf /old-root
       ;;
