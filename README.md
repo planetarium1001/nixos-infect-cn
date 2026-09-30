@@ -2,6 +2,8 @@
 
 使用国内镜像源，将 Debian / Ubuntu 云主机转换为 NixOS。
 
+![](./screenshots/screenshot.png)
+
 | 项目 | 内容 |
 | --- | --- |
 | 版本 | `2026-09-30` |
@@ -18,16 +20,13 @@
 
 ## 已验证平台
 
-| 平台 | 原始系统 | 引导 | 结果 |
-| --- | --- | --- | --- |
-| 腾讯云 Lighthouse | Debian 10.2 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Debian 11.1 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Debian 12.0 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Debian 13.2 | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 |
-| 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 |
+| 平台 | 原始系统 | 引导 | 结果 | 平台 | 原始系统 | 引导 | 结果 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 腾讯云 Lighthouse | OpenCloudOS 9 | BIOS | 通过 | 腾讯云 Lighthouse | OpenCloudOS 8 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 20.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 10.2 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 22.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 11.1 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 24.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 12.0 | BIOS | 通过 |
+| 腾讯云 Lighthouse | Ubuntu 26.04 LTS | BIOS | 通过 | 腾讯云 Lighthouse | Debian 13.2 | BIOS | 通过 |
 
 覆盖腾讯云 Lighthouse 当前可选的 Debian 与 Ubuntu 镜像，均为 KVM + BIOS 实例。  
 转换结果为 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，安装后
@@ -47,6 +46,14 @@ curl -fsSL https://cdn.jsdelivr.net/gh/planetarium1001/nixos-infect-cn@master/ni
 ```
 
 脚本会自动探测镜像、生成配置、安装 NixOS，完成后自动重启。
+
+重启进入 NixOS 并确认工作正常后，可通过如下命令自动清理安装残留文件以及原系统的备份(old-root)
+```bash
+bash /root/nixos-infect-cleanup.sh
+```
+
+![](./screenshots/quickstart.png)
+![](./screenshots/cleanup.png)
 
 ### 下载源
 
@@ -85,6 +92,10 @@ bash nixos-infect.sh --interactive --lang=zh
 3. 显示配置摘要
 4. 回答 `n` 进入 `/etc/nixos` 下的 shell，直接编辑 `configuration.nix`；`exit` 返回
 5. 摘要会**重新读取文件内容**，显示的即是最终生效的配置，确认后开始安装
+
+![](./screenshots/interactive_0.png)
+![](./screenshots/interactive_1.png)
+![](./screenshots/interactive_2.png)
 
 ### 方式二：外部模板
 
