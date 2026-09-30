@@ -29,6 +29,9 @@
 均为 KVM 实例，转换到 NixOS 25.11：DHCP 正常、SSH 可登录、host key 保留，
 安装后 `nix-channel --update` / `nixos-rebuild` 均走国内镜像。
 
+> 其中 Debian 12 这一台的引导模型和其他不同（宿主机自行解析 `grub.cfg` 直接引导），
+> 详见「宿主机自行引导的平台」一节。
+
 **建议使用上表中已验证的系统版本。** 未列出的版本未经验证；上游的经验是 LTS 版本稳定，
 非 LTS（如 Ubuntu 22.10、23.10）失败。EFI 引导尚未实测。
 
@@ -206,12 +209,38 @@ bash /root/nixos-infect-cleanup.sh
 `configuration` 可用占位符：`@@HOSTNAME@@` `@@DOMAIN@@` `@@ZRAM@@` `@@NETWORK_IMPORT@@`
 `@@SUBSTITUTERS_BLOCK@@` `@@DEFAULT_CHANNEL@@` `@@AUTHORIZED_KEYS@@`
 
+## 宿主机自行引导的平台
+
+少数镜像（实测腾讯云 Debian 12）的**宿主机自己解析 `/boot/grub/grub.cfg` 并直接引导内核**，
+不经过磁盘 GRUB。两个表现：
+
+- VNC / 串口里**看不到 GRUB 菜单**，开机直接进系统
+- 宿主机**缓存**这份解析结果，只有 `/boot` 下的内核文件变化时才重新读取
+
+第二条会直接破坏接管：脚本改写了 `grub.cfg`，但宿主机缓存没失效，重启后仍按**原系统的
+引导项**启动。现象就是「安装成功、重启、还是原来的系统」，而磁盘上的 GRUB、`grub.cfg`、
+MBR 看起来全都正确 —— 因为宿主机压根没看它们。
+
+脚本已自动处理：`finalize_nixos` 装完引导程序后会 `touch` 一遍 `/boot/vmlinuz-*` 和
+`/boot/initrd.img-*` 让缓存失效。**文件内容无关紧要**，只需要「变了」这个信号 ——
+实测即使 `/boot` 下仍是原发行版的内核，重启后也会按新的 `grub.cfg` 启动 NixOS。
+
+在靠磁盘 GRUB 引导的平台上，这一步是无害的空操作。
+
+遇到「重启后还是原系统」时可以这样确认：
+
+```bash
+cat /etc/NIXOS_LUSTRATE                                  # 仍在 = NixOS 从未启动过
+tr ' ' '\n' < /proc/cmdline | grep BOOT_IMAGE            # 看实际引导的是哪个内核
+touch /boot/vmlinuz-* /boot/initrd.img-* && reboot       # 手动让缓存失效后重试
+```
+
 ## 已知限制
 
 - 管道执行（`curl | bash`）时无法交互，所有提问自动取默认值。
-- EFI 引导未实测，目前只在 BIOS + GRUB 上验证过。
-- Ubuntu 24.04 及更新的版本未测试。
+- EFI 引导未实测，目前只在 BIOS 上验证过。
 - 清理脚本的 `/old-root` 需要手动确认删除。
+- 未列在「已验证平台」里的系统版本未经验证。
 
 ## 排障
 
