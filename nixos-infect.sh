@@ -2,23 +2,52 @@
 # ===========================================================================
 # nixos-infect-cn 2026-10-01
 # ---------------------------------------------------------------------------
-# 使用国内镜像源在服务器覆盖安装 NixOS 
+# 用国内镜像源把云服务器上的 Debian / Ubuntu / OpenCloudOS 覆盖安装为 NixOS。
 # fork 自 https://github.com/elitak/nixos-infect
 #
 # 用法:
-#   curl -fsSL <url> | bash
-#   bash nixos-infect.sh [OPTIONS]
+#   curl -fsSL <url> | bash -s -- --lang=zh   # 管道执行，非交互
+#   bash nixos-infect.sh [OPTIONS]            # 本地执行，可用 --interactive
 #
-# 详见 --help。
+# 依赖: bash 4+、curl（缺失时用 wget 顶替）、awk、sed、tar、ip、bzcat、xzcat
+# 入口: 文件末尾的 main "$@"；source 本文件不会执行任何流程
+# 文档: https://github.com/planetarium1001/nixos-infect-cn
+#
+# 阅读与维护指南:
+#   SECTION 1   常量与全局默认值        1.1 颜色
+#   SECTION 2   日志与 i18n             SECTION 3   UI 原语
+#   SECTION 4   通用工具                SECTION 5   系统探测
+#   SECTION 6   镜像探测                SECTION 7   模板渲染与配置流程
+#   SECTION 8   安装与接管              SECTION 9   清理
+#   SECTION 10  main 与参数解析         SECTION 11  内置模板
+#
+# 约定:
+#   - 注释面向维护者，用中文；所有用户可见文案走 SECTION 2 的 MSG_* 表
+#   - 新增文案: MSG_EN 与 MSG_ZH 同时加 key，再调用 msg / msg_fmt
+#   - 函数头写「用途 / 用法 / 输出 / 副作用」；行内注释只解释「为什么」
+#   - 脚本设计为幂等：可重复执行，接管完成后 finalize_nixos 会跳过
+#   - 危险操作（清盘、写引导、重启）前必须有可回退判断，见各函数注释
+#
+# 安全提示: 会清空目标机磁盘并覆盖引导，只应在可丢弃的新机器上运行。
 # ===========================================================================
+
+# 刻意只开 pipefail：不开 set -e，因为探测、包安装等步骤允许失败，
+# 需要按返回值自行决定是否中止；也不开 set -u，历史实现依赖未定义变量为空串。
 set -o pipefail
+# 生成的文件统一为 644（目录 755），保证 Nix 与服务能正常读取配置。
 umask 0022
 
 # ===========================================================================
 # SECTION 1: 常量与全局默认值
+# ---------------------------------------------------------------------------
+# 全局状态的唯一登记处：
+# - 用户可预置项一律写成 "${VAR:-默认值}"，环境变量不会被脚本重置
+# - 运行时状态由脚本写入；仅 DRY_RUN、NO_COLOR 允许从环境预置
+# - 新增开关的顺序：这里登记 → parse_args 解析 → --help 与文档同步
+# - 用户可见文案不放在本区，统一进 SECTION 2 的 MSG_EN / MSG_ZH
 # ===========================================================================
 
-# 版本号-日期
+# 版本号即发布日期，与 README 的版本表保持一致；发版时两处同时修改。
 NIXOS_INFECT_CN_VERSION="2026-10-01"
 
 # --- 用户可预置（环境变量不会被脚本重置） ---
@@ -62,7 +91,11 @@ declare -A TEMPLATE_OVERRIDES=()
 
 # ===========================================================================
 # SECTION 1.1: 颜色
+# ---------------------------------------------------------------------------
+# 只在「输出到终端且未禁用颜色」时启用 ANSI 转义。
+# 管道、重定向、--no-color 场景下全部置空，日志与 CI 输出保持纯文本。
 # ===========================================================================
+
 if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
   C_RESET=$'\033[0m';  C_BOLD=$'\033[1m';  C_DIM=$'\033[2m'
   C_RED=$'\033[31m';   C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
@@ -75,9 +108,18 @@ fi
 
 # ===========================================================================
 # SECTION 2: 日志与 i18n
+# ---------------------------------------------------------------------------
+# 日志与文案两条链路都汇总在这里：
+# - 日志：终端按级别着色，同时追加到 LOG_FILE；文件不可写时自动静默降级
+# - 文案：MSG_EN / MSG_ZH 两张表 + msg / msg_fmt 两个取值函数
+# - 约定：业务代码不硬编码用户可见文字，一律先加 key 再调用 msg
 # ===========================================================================
 
+# 文件日志的总开关。首次写入探测失败即永久关闭，避免每条日志都产生
+# 一次重定向错误（只读文件系统、权限不足等场景）。
 _LOG_DISABLED=""
+# 写一条带时间戳的日志到 LOG_FILE，不输出到终端。
+# 首次写入前先探测可写性，不可写则永久关闭文件日志（_LOG_DISABLED）。
 _log_write() {
   [ -n "$LOG_FILE" ] || return 0
   if [ -z "$_LOG_DISABLED" ]; then
@@ -94,6 +136,13 @@ _log_write() {
   printf '%s [%s] %s\n' "$ts" "$level" "$*" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# 统一日志出口，级别约定：
+#   log_info  正常进展（stdout）
+#   log_warn  可恢复的异常（stderr）
+#   log_error 致命错误（stderr）
+#   log_step  阶段标题（stdout，带 ==> 前缀）
+#   log_debug 仅 --verbose 时输出
+# 所有级别在未禁用时同时追加到 LOG_FILE。
 log_info()  { printf '%s[INFO]%s %s\n'  "$C_GREEN"  "$C_RESET" "$*"; _log_write INFO  "$*"; }
 log_warn()  { printf '%s[WARN]%s %s\n'  "$C_YELLOW" "$C_RESET" "$*" >&2; _log_write WARN  "$*"; }
 log_error() { printf '%s[ERROR]%s %s\n' "$C_RED"    "$C_RESET" "$*" >&2; _log_write ERROR "$*"; }
@@ -267,6 +316,8 @@ declare -A MSG_ZH=(
   [cleanup_hint]="重启进入 NixOS 并确认工作正常后，执行："
 )
 
+# 取当前语言的文案：zh 用 MSG_ZH，其它用 MSG_EN。
+# key 缺失时回退到英文，再回退到空串。
 msg() {
   local key="$1"
   if [ "$LANG_OPT" = "zh" ]; then
@@ -276,6 +327,9 @@ msg() {
   fi
 }
 
+# 带参数的文案格式化，参数按 printf 规则传入。
+# 注意必须用 printf --，否则以 "-" 开头的文案（如 "--prefer=%s"）
+# 会被 printf 当成选项解析。
 msg_fmt() {
   local key="$1"; shift
   local template
@@ -287,9 +341,16 @@ msg_fmt() {
 
 # ===========================================================================
 # SECTION 3: UI 原语
+# ---------------------------------------------------------------------------
+# 交互界面所需的最小原语，不依赖业务逻辑，可在任意阶段复用。
+# 核心约束：展示给用户的内容走 stderr，函数结果走 stdout ——
+# 调用方用 $(...) 捕获结果，两者混在一起会破坏取值。
+# 非 TTY（curl | bash）时一律不读 stdin，原因见 ui_can_prompt。
 # ===========================================================================
 
-# 显示宽度：ASCII 1 列，CJK 2 列
+# 显示宽度：ASCII 1 列，CJK 2 列。
+# 优先用 python3 的 east_asian_width 精确计算；没有 python3 时
+# 按字节数与字符数估算，保证菜单与表格在纯 shell 环境下也能对齐。
 display_width() {
   local text="$1"
   if command -v python3 >/dev/null 2>&1; then
@@ -310,6 +371,8 @@ print(w)
   fi
 }
 
+# 打印居中标题，上下各一条分隔线（宽度固定 48 列）。
+# 视觉分组统一用 print_title，不要在手写代码里拼分隔线。
 print_title() {
   local text="$1"
   local width=48
@@ -323,8 +386,9 @@ print_title() {
   printf "${C_DIM}%s${C_RESET}\n" "$line"
 }
 
-# 键值对打印（按显示宽度对齐）
+# 键值对打印（按显示宽度对齐），用于配置摘要等成组信息。
 # 用法: print_kv "Label" "value" [target_width]
+# target_width 是值之前的列宽，默认 22；键名超长时不再补齐。
 print_kv() {
   local key="$1" value="$2" target_width="${3:-22}"
   local kw pad spaces
@@ -424,6 +488,8 @@ ui_choose_multi() {
   printf '%s' "${out# }"
 }
 
+# 询问 y/n，返回 0 表示同意。
+# 非 TTY（管道执行）时不读 stdin，直接返回默认值，避免吞掉脚本文本。
 confirm() {
   local prompt="$1" default="${2:-n}"
   local hint
@@ -447,6 +513,9 @@ confirm() {
   esac
 }
 
+# 打开一个位于 CONFIG_DIR 的交互式 shell，让用户编辑配置文件。
+# 返回 0 表示确实进入了 shell；返回 1 表示没有 TTY，调用方必须据此退出重试循环，
+# 否则非交互环境会无限循环。
 enter_shell() {
   # 非 TTY（curl | bash）时绝不能起 bash：它的 stdin 就是本脚本，
   # 会把脚本剩余内容当成命令重新执行一遍。
@@ -456,12 +525,18 @@ enter_shell() {
     return 1
   fi
   log_info "$(msg config_enter_shell)"
+  # 用子 shell 切换目录，退出后不影响脚本自身的 cwd。
   (cd "$CONFIG_DIR" && bash) || true
   return 0
 }
 
 # ===========================================================================
 # SECTION 4: 通用工具
+# ---------------------------------------------------------------------------
+# 与安装流程无关的通用能力：
+# - fmt_progress_line / run_quiet：把长命令输出收成一行进度
+# - normalize_substituters / subs_nix_block：缓存地址的规范化与渲染
+# - resolve_channel：解析最新稳定版 channel
 # ===========================================================================
 
 # 把 Nix 的一行输出压成适合单行进度显示的形式：
@@ -548,7 +623,9 @@ run_quiet() {
   return "$rc"
 }
 
-# 规范化 substituters：过滤 cache.nixos.org，去重
+# 规范化 substituters：空格分隔输入，输出也是空格分隔。
+# 过滤 cache.nixos.org —— Nix 会自动把它追加在末尾作为兜底，
+# 写进配置只会重复。同时去重，并保持用户给出的顺序。
 normalize_substituters() {
   local raw="$1"
   local out=""
@@ -565,8 +642,9 @@ normalize_substituters() {
   printf '%s' "${out# }"
 }
 
-# 生成 configuration.nix 的 nix.settings.substituters 块（含选项名）
-# 返回空字符串表示整块不生成（让 Nix 用默认）
+# 生成 configuration.nix 的 nix.settings.substituters 块（含选项名）。
+# 返回空字符串表示整块不生成，此时 Nix 使用默认缓存。
+# 返回值由调用方作为 @@SUBSTITUTERS_BLOCK@@ 传入模板。
 subs_nix_block() {
   local subs
   subs=$(normalize_substituters "$NIX_SUBSTITUTERS")
@@ -580,7 +658,11 @@ subs_nix_block() {
   printf '  ];\n'
 }
 
-# 解析最新稳定版 channel，失败则回退到 nixos-25.11
+# 解析最新稳定版 channel：
+#   1. 用户已指定 NIX_CHANNEL → 直接使用
+#   2. --no-probe → 不访问网络，使用内置回退值
+#   3. 读取 nixos.org/channels/ 页面，取版本号最大的稳定版
+# 解析失败或没有网络时回退到 nixos-25.11，保证流程能继续。
 resolve_channel() {
   [ -n "$NIX_CHANNEL" ] && { printf '%s' "$NIX_CHANNEL"; return; }
 
@@ -609,11 +691,22 @@ resolve_channel() {
 }
 # ===========================================================================
 # SECTION 5: 系统探测
+# ---------------------------------------------------------------------------
+# 只读地采集当前系统的引导方式、根设备、swap 与网络形态，
+# 结果供 SECTION 7 渲染模板。这些信息在安装期间不会变化，只在开头采集一次。
 # ===========================================================================
 
+# 平台判定小工具。
+# isX86_64：决定是否加入 vmw_pvscsi 等仅 x86 可用的内核模块。
+# isEFI：/sys/firmware/efi 存在即按 EFI 处理。
 isX86_64() { [ "$(uname -m)" = "x86_64" ]; }
 isEFI()    { [ -d /sys/firmware/efi ]; }
 
+# 定位 EFI 系统分区（ESP），结果写入全局变量 esp。
+# 依次尝试 /boot/EFI、/boot/efi、/boot，只接受「自己就是挂载点」的目录，
+# 再用 /dev/disk/by-uuid 反查出 UUID 形式的设备路径（比 /dev/sda1 稳定，
+# 也符合 NixOS hardware-configuration.nix 的习惯）。
+# 找不到时返回 1，调用方应视为 EFI 环境异常。
 findESP() {
   esp=""
   local d
@@ -631,6 +724,12 @@ findESP() {
   done
 }
 
+# 采集引导方式与根文件系统信息，写入全局变量：
+#   EFI  → esp（由 findESP 探测）
+#   BIOS → grubdev（依次尝试 vda / sda / xvda / nvme0n1）
+#   两者都会填 rootfsdev 与 rootfstype
+# 同时把 USER / HOME 固定为 root，避免 sudo 或 su 残留的环境干扰
+# nix 的安装路径与 profile 位置。
 prepare_sysinfo() {
   if isEFI; then
     esp="$(findESP)"
@@ -640,6 +739,7 @@ prepare_sysinfo() {
     done
   fi
 
+  # 根设备与文件系统类型分开取：mount 给设备名，df 给 fstype。
   rootfsdev=$(mount | grep "on / type" | awk '{print $1;}')
   rootfstype=$(df "$rootfsdev" --output=fstype 2>/dev/null | sed 1d)
 
@@ -647,6 +747,9 @@ prepare_sysinfo() {
   export HOME="/root"
 }
 
+# 检查系统是否已有块设备 swap：
+#   - 有 → 关闭 zram，把 swapDevices 写进 hardware 模板，并置 NO_SWAP=1
+#   - 无 → 保持 zramSwap 开启，安装期间按需创建临时 swap
 checkExistingSwap() {
   local SWAPSHOW
   SWAPSHOW=$(swapon --show --noheadings --raw 2>/dev/null || echo "")
@@ -654,6 +757,7 @@ checkExistingSwap() {
   swapcfg=""
   if [ -n "$SWAPSHOW" ]; then
     local SWAP_DEVICE="${SWAPSHOW%% *}"
+    # 只认块设备 swap；zram 等虚拟设备不写进 hardware 配置。
     if [ "${SWAP_DEVICE#/dev/}" != "$SWAP_DEVICE" ]; then
       zramswap=false
       swapcfg="swapDevices = [ { device = \"${SWAP_DEVICE}\"; } ];"
@@ -662,8 +766,14 @@ checkExistingSwap() {
   fi
 }
 
-# 静态网络检测：有 IP + 网关 + 无 DHCP 痕迹 → 认为需要 networking.nix
+# 判断是否需要生成 networking.nix：
+#   1. --networking / --no-networking 显式指定优先
+#   2. 找不到默认路由 → 不需要（DHCP 场景）
+#   3. 发现 DHCP 租约或 dynamic 标记 → 不需要
+#   4. 有静态 IPv4 地址 → 需要
+# 判定失误的代价很高（生成错误配置会失联），所以只认明确信号。
 sys_needs_networking_conf() {
+  # 显式参数优先于自动判断。
   if [ "$FORCE_NETWORKING" = "1" ]; then
     log_info "$(msg networking_forced_on)"
     return 0
@@ -708,6 +818,12 @@ sys_needs_networking_conf() {
 
 # ===========================================================================
 # SECTION 6: 镜像探测
+# ---------------------------------------------------------------------------
+# 安装器、channel、二进制缓存三类资源独立探测：
+# - 可达性用 HEAD 请求判断（is_ok）
+# - 速度用 1MB range 请求取样，多轮取中位数
+# - 结果写入 R_* 关联数组，最后由 probe_pick 落成全局 URL
+# - 用户显式设置的值优先级最高，探测只负责填空
 # ===========================================================================
 
 # 保底顺序: TUNA → NJU → BFSU → USTC → SJTUG
@@ -741,6 +857,9 @@ declare -A R_MIRROR_SPEED
 # 探测数据是否新鲜（用于 main 判断是否显示 report / interactive）
 PROBE_DATA_FRESH=0
 
+# 取 URL 的 HTTP 状态码，失败重试一次。
+# 000（连不上）和 5xx（网关/服务异常）通常是瞬时抖动，值得重试；
+# 其余状态码原样返回，由 is_ok 判断。
 probe_http() {
   local url="$1"
   local code
@@ -756,6 +875,10 @@ probe_http() {
   echo "$code"
 }
 
+# 对 URL 发起 1MB 的 range 请求，输出 "<耗时秒> <字节/秒>"。
+# 只取 1MB 既够区分快慢，又不会在慢镜像上卡太久。
+# 实际下载量不足 MIN_VALID_BYTES 时返回 "0 0"：说明镜像屏蔽了 range
+# 请求或返回了错误页，这一轮测速无效。
 speed_test_range() {
   local url="$1"
   local out
@@ -773,6 +896,8 @@ speed_test_range() {
   echo "$t $sp"
 }
 
+# 多轮测速取中位数，抑制单次抖动；--fast 时只跑 1 轮。
+# 全部失败时返回 0。中位数比平均值更能反映镜像的常态速度。
 speed_median() {
   local url="$1"
   local rounds="$SPEED_ROUNDS"
@@ -791,6 +916,8 @@ speed_median() {
   printf '%s\n' "${speeds[@]}" | sort -n | awk -v n="$n" 'NR==int((n+1)/2){print $1}'
 }
 
+# 把「字节/秒」转成人读的单位：MB/s、KB/s、B/s。
+# 0 或空值显示为 "—"，表示没有测到速度。
 fmt_speed_raw() {
   local bps="$1"
   if [ -z "$bps" ] || [ "$bps" = "0" ]; then
@@ -804,6 +931,8 @@ fmt_speed_raw() {
   fi
 }
 
+# 按速度选择终端颜色，用于探测结果表：
+#   ≥ 1 MB/s 绿色，≥ 300 KB/s 黄色，其余红色，0 用暗色。
 speed_color() {
   local bps="$1"
   if [ -z "$bps" ] || [ "$bps" = "0" ]; then echo "$C_DIM"
@@ -812,11 +941,14 @@ speed_color() {
   else echo "$C_RED"; fi
 }
 
+# 组合颜色与单位，供菜单和汇总表直接使用。
 fmt_speed() {
   local bps="$1"
   echo "$(speed_color "$bps")$(fmt_speed_raw "$bps")${C_RESET}"
 }
 
+# HTTP 状态码是否代表资源存在（含常见重定向）。
+# 只判断「能不能取到」，不关心内容。
 is_ok() {
   case "$1" in
     200|301|302|303|307|308) return 0 ;;
@@ -824,6 +956,13 @@ is_ok() {
   esac
 }
 
+# 逐个镜像探测三类资源，结果写入 R_* 关联数组：
+#   R_INSTALL_URL    安装器地址（已知路径优先，未命中再试 INSTALL_VARIANTS）
+#   R_CHANNEL_OK/URL channel 是否可用及其地址
+#   R_STORE_OK/URL   二进制缓存是否可用及其地址
+#   R_MIRROR_SPEED   综合测速结果（字节/秒），0 表示「可达但测不出速度」
+# 三类资源互相独立：某个镜像可能只有 channel，没有安装器。
+# 测速优先用通用大文件，取不到时依次退到 channel 包、镜像根路径。
 probe_all() {
   local entry name base known_install
   for entry in "${MIRRORS[@]}"; do
@@ -831,6 +970,7 @@ probe_all() {
 
     # Install
     local found_install="" url code variant
+    # 该镜像有已知安装器路径时先试它，命中就省掉三次变体探测。
     if [ -n "$known_install" ]; then
       url="${base}${known_install}"
       code=$(probe_http "$url")
@@ -880,6 +1020,7 @@ probe_all() {
     if [ "$mirror_speed" = "0" ] && [ "${R_CHANNEL_OK[$name]}" = "1" ]; then
       mirror_speed=$(speed_median "$channel_test_url")
     fi
+    # 通用大文件与 channel 包都测不到速度时，退到镜像根路径；只要能量出快慢就够。
     if [ "$mirror_speed" = "0" ] && [ "${R_STORE_OK[$name]}" = "1" ]; then
       local fallback_speed
       fallback_speed=$(speed_median "${base}/")
@@ -891,6 +1032,9 @@ probe_all() {
   done
 }
 
+# 在某一类资源（install / channel）中挑速度最快的镜像名。
+# 只考虑该类资源可用的镜像；速度为 0 的镜像仍可入选（有总比没有强）。
+# 输出镜像名；没有可用镜像时输出空串。
 pick_best() {
   local kind="$1" best_name="" best_speed=-1 entry name s
   for entry in "${MIRRORS[@]}"; do
@@ -909,6 +1053,8 @@ pick_best() {
   echo "$best_name"
 }
 
+# 优先返回 --prefer 指定的镜像（前提是该类资源确实可用），
+# 否则退回 pick_best。显式偏好不保证一定胜出：不可用就换更快的。
 pick_with_preference() {
   local kind="$1"
   if [ -n "$PREFER_MIRROR" ]; then
@@ -922,6 +1068,8 @@ pick_with_preference() {
   pick_best "$kind"
 }
 
+# 输出所有可用二进制缓存镜像名，按测速结果降序，每行一个。
+# 供 probe_pick 生成 substituters 列表，也供交互模式计算默认顺序。
 pick_store_list() {
   local -a items=()
   local entry name
@@ -931,10 +1079,13 @@ pick_store_list() {
     items+=("${R_MIRROR_SPEED[$name]:-0}:$name")
   done
   [ ${#items[@]} -eq 0 ] && return
+  # 排序键是 "速度:镜像名"，输出时只保留镜像名。
   printf '%s\n' "${items[@]}" | sort -t: -k1 -rn | cut -d: -f2
 }
 
-# 保底顺序（TUNA → NJU → BFSU → USTC → SJTUG）
+# 保底方案：完全不探测时使用（--no-probe 或探测被跳过）。
+# 安装器与 channel 固定用 TUNA，缓存列出全部镜像的地址。
+# 缓存顺序只是「都能用」的兜底，不代表实测速度。
 probe_fallback() {
   log_warn "$(msg probe_fallback)"
   local ch="${NIX_CHANNEL:-nixos-25.11}"
@@ -943,7 +1094,9 @@ probe_fallback() {
   NIX_SUBSTITUTERS="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirror.nju.edu.cn/nix-channels/store https://mirrors.bfsu.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://mirror.sjtu.edu.cn/nix-channels/store"
 }
 
-# 从探测结果生成最终选择（不覆盖用户已预设的值）
+# 把探测结果落成最终值：NIX_INSTALL_URL / NIX_CHANNEL_URL / NIX_SUBSTITUTERS。
+# 三个值都遵守同一规则：用户已显式设置则不覆盖，只填空。
+# 某类资源全部不可用时退回官方地址。
 probe_pick() {
   local best_install best_channel best_store
   best_install=$(pick_with_preference install)
@@ -977,6 +1130,8 @@ probe_pick() {
   fi
 }
 
+# 把本轮最终结果写入探测缓存，供 --skip-probe 在 TTL 内复用。
+# 只记录结果，不记录完整测速表 —— 缓存的作用是省时间，不是省一次探测。
 probe_cache_write() {
   mkdir -p "$(dirname "$PROBE_CACHE")"
   {
@@ -988,6 +1143,12 @@ probe_cache_write() {
   } > "$PROBE_CACHE"
 }
 
+# 镜像探测总入口，按优先级处理三种情况：
+#   1. --no-probe   → 不发任何请求，直接使用保底顺序
+#   2. --skip-probe → TTL 内缓存直接复用；与 --prefer 冲突或过期时询问后重测
+#   3. 默认         → 全量探测
+# 返回时 NIX_CHANNEL / NIX_INSTALL_URL / NIX_CHANNEL_URL / NIX_SUBSTITUTERS
+# 一定都有值，后续阶段不需要再判空。
 probe_run() {
   command -v curl >/dev/null 2>&1 || { log_error "$(msg probe_no_curl)"; exit 1; }
 
@@ -1057,6 +1218,8 @@ probe_run() {
   probe_cache_write
 }
 
+# 打印探测结果汇总表：每个镜像的安装器、channel、缓存三列状态，
+# 以及速度脚注。只在真正做过探测（PROBE_DATA_FRESH=1）时调用。
 probe_report() {
   print_title "$(msg title_summary)"
 
@@ -1113,6 +1276,9 @@ probe_report() {
   echo ""
 }
 
+# 交互模式下的镜像选择，三组菜单：
+#   安装器（单选）→ channel（单选）→ 二进制缓存（多选，按优先级排序）
+# 用户直接回车采用探测推荐值。选择结果会刷新探测缓存。
 probe_interactive() {
   if [ "${NO_PROBE:-0}" = "1" ] || [ "${#R_INSTALL_URL[@]}" -eq 0 ]; then
     log_debug "no probe data, skipping interactive mirror selection"
@@ -1210,6 +1376,10 @@ probe_interactive() {
 
 # ===========================================================================
 # SECTION 7: 模板渲染与配置流程
+# ---------------------------------------------------------------------------
+# 把 SECTION 5 的探测结果与用户选择渲染成 /etc/nixos 下的 Nix 文件，
+# 并提供「摘要 → 人工确认 → 编辑 shell」的交互流程。
+# 产物是 SECTION 8 构建系统闭包的唯一输入，错误要在这里尽早暴露。
 # ===========================================================================
 
 # 渲染模板到文件
@@ -1242,6 +1412,7 @@ cfg_render() {
   fi
 
   local pair
+  # 用 bash 参数展开替换占位符，不经过 sed，避免 URL 里的 / 与 & 被当成特殊字符。
   for pair in "$@"; do
     tmpl="${tmpl//@@${pair%%=*}@@/${pair#*=}}"
   done
@@ -1264,7 +1435,9 @@ cfg_collect_ssh_keys() {
     fi
   done
 
+  # 把每条公钥包成带缩进的 Nix 列表项，直接替换 @@AUTHORIZED_KEYS@@。
   local keys_nix="" line trimmed
+  # 逐行归一化：去掉 CR 与首尾空白，跳过空行。
   while IFS= read -r line; do
     line=$(printf '%s' "$line" | sed 's/\r//g')
     trimmed=$(printf '%s' "$line" | xargs)
@@ -1275,7 +1448,8 @@ cfg_collect_ssh_keys() {
   printf '%s' "$keys_nix"
 }
 
-# 计数（用于 config_summary）
+# 统计实际生效的授权公钥条数（跳过注释行），用于配置摘要。
+# 遍历与 cfg_collect_ssh_keys 相同的三个候选路径；找不到时返回 0。
 cfg_count_ssh_keys() {
   local kf count
   for kf in /root/.ssh/authorized_keys \
@@ -1293,6 +1467,11 @@ cfg_count_ssh_keys() {
   printf '0'
 }
 
+# 渲染三份配置到 CONFIG_DIR：
+#   configuration.nix            主机名 / 域名 / zram / substituters / channel / 公钥
+#   hardware-configuration.nix   引导方式与文件系统（EFI 与 BIOS 二选一）
+#   networking.nix               仅在 doNetConf 非空时生成
+# 所有变量来自 SECTION 5 的探测结果与前面的用户选择。
 make_conf() {
   local akmods='"ata_piix" "uhci_hcd" "xen_blkfront"'
   isX86_64 && akmods="$akmods \"vmw_pvscsi\""
@@ -1345,6 +1524,9 @@ make_conf() {
   fi
 }
 
+# 从当前系统的 ip / resolv.conf 提取静态网络参数，渲染 networking.nix。
+# 提取不到网卡或 IPv4 地址时直接失败：一份字段为空的 networking.nix
+# 会让重启后的机器彻底失联，比中止严重得多。
 cfg_generate_networking() {
   local IFS=$'\n'
   local eth0_name eth0_ip4s eth0_ip6s gateway gateway6 ether0
@@ -1405,9 +1587,11 @@ cfg_file_substituters() {
   ' "$file"
 }
 
+# 打印配置摘要。
+# 所有字段优先从生成的文件回读（用户可能刚在 shell 里改过），
+# 读不到才退回脚本内存里的值。
 config_summary() {
   local hn ch subs
-  # 一律优先读文件，读不到才退回脚本内存里的值
   hn=$(cfg_file_get 'networking\.hostName')
   [ -z "$hn" ] && hn=$(hostname -s 2>/dev/null || echo unknown)
 
@@ -1430,6 +1614,10 @@ config_summary() {
   echo ""
 }
 
+# 交互模式的「摘要 → 确认 / 编辑」循环：
+#   - 每轮先显示摘要与文件路径
+#   - 用户确认则返回；否则进入 shell 编辑，改完重新显示
+#   - --yes 时跳过确认，直接返回
 edit_loop() {
   while :; do
     config_summary
@@ -1448,6 +1636,10 @@ edit_loop() {
   done
 }
 
+# 配置阶段总控：
+#   - 先决定是否生成 networking.nix（静态 IP 检测，可被参数强制）
+#   - /etc/nixos 已有配置时：交互模式三选一，自动模式直接沿用
+#   - 否则生成默认配置；交互模式再进入编辑循环
 config_flow() {
   local existing=0
   [ -e "$CONFIG_DIR/configuration.nix" ] && existing=1
@@ -1501,8 +1693,16 @@ config_flow() {
 }
 # ===========================================================================
 # SECTION 8: 安装与接管
+# ---------------------------------------------------------------------------
+# 真正修改系统的部分，顺序不可随意调换：
+# 预检 → 临时 swap → nix.conf → 安装 Nix → 配 channel
+# → 语法/语义检查 → 写 LUSTRATE → 安装引导 → sync
+# 关键步骤失败即退出，避免停留在「装了一半」的状态。
 # ===========================================================================
 
+# 系统没有 curl 时，用 wget 定义一个 curl 函数并导出给子进程。
+# 只覆盖本脚本用到的参数组合（-fsSL -o / -O -L），不是通用替代品；
+# 是否成功由调用方的返回值判断。
 fakeCurlUsingWget() {
   command -v wget >/dev/null 2>&1 || return 1
   curl() {
@@ -1522,13 +1722,21 @@ fakeCurlUsingWget() {
   export -f curl
 }
 
+# 命令是否可用：函数或可执行文件都算。
+# 用于 checkEnv 的统一缺依赖判断。
 req() {
   type "$1" >/dev/null 2>&1 || command -v "$1" >/dev/null 2>&1
 }
 
+# 安装前预检，尽量把系统调整到可运行状态：
+#   - 必须是 root，否则直接退出
+#   - 按发行版补齐 bzcat / xzcat / curl（装不上不致命，后面 req 再兜底）
+#   - 缺关键命令则中止，避免安装到一半失败
+#   - 收紧 SSH host key 权限，NixOS 侧 sshd 对权限很敏感
 checkEnv() {
   [ "$(whoami)" = "root" ] || { log_error "Must run as root"; exit 1; }
 
+  # 部分发行版缺 perl-Digest-SHA，先尝试装；失败不影响后续判断。
   if command -v dnf >/dev/null 2>&1; then dnf install -y perl-Digest-SHA >/dev/null 2>&1 || true; fi
 
   if ! command -v bzcat >/dev/null 2>&1; then
@@ -1571,6 +1779,8 @@ checkEnv() {
   fi
 }
 
+# 创建并启用 1GB 临时 swap，缓解小内存机器构建系统闭包时的 OOM。
+# 固定大小：够覆盖构建峰值，又不至于占满小磁盘。
 makeSwap() {
   # 先清理上次可能残留的 swap 文件
   rm -f /tmp/nixos-infect.*.swp 2>/dev/null || true
@@ -1582,11 +1792,16 @@ makeSwap() {
   swapon "$swapFile" >/dev/null 2>&1 || true
 }
 
+# 关闭并删除临时 swap 文件。调用方决定何时执行（--no-swap 时全程不建）。
 removeSwap() {
   swapoff -a >/dev/null 2>&1 || true
   rm -f /tmp/nixos-infect.*.swp 2>/dev/null || true
 }
 
+# 写 /etc/nix/nix.conf：
+#   - 写入国内 substituters；为空则不写这行，让 Nix 用默认
+#   - 固定 trusted-public-keys，国内缓存代理的包仍由官方公钥校验
+#   - 保留用户原有的其它配置项，只剔除旧的 substituters / trusted-public-keys
 write_nix_conf() {
   log_step "$(msg install_write_conf)"
   mkdir -p /etc/nix
@@ -1608,6 +1823,11 @@ write_nix_conf() {
   log_debug "nix.conf written, substituters=${subs:-<default>}"
 }
 
+# 安装 Nix：
+#   - 已存在（例如重跑脚本）则只 source 环境变量后返回
+#   - 先建 nixbld 组与构建用户（部分镜像的安装器不会自动处理）
+#   - 先把安装器下载到临时文件再执行，避免下载进度条和安装器输出互相覆盖
+#   - 安装器输出交给 run_quiet 收进日志
 install_nix() {
   if command -v nix >/dev/null 2>&1; then
     log_info "$(msg install_nix_skip)"
@@ -1620,6 +1840,7 @@ install_nix() {
 
   log_step "$(msg install_nix)"
 
+  # 固定 gid=30000，与上游一致；已存在时 groupadd 失败并被忽略。
   groupadd nixbld -g 30000 2>/dev/null || true
   local i
   for i in $(seq 1 10); do
@@ -1653,6 +1874,8 @@ install_nix() {
   }
 }
 
+# 配置 nix-channel：移除安装器可能加上的官方 nixpkgs，指向国内 channel 并拉取。
+# 后续 <nixpkgs/nixos> 的求值完全依赖这一步。
 setup_channel() {
   log_step "$(msg install_channel)"
 
@@ -1666,6 +1889,9 @@ setup_channel() {
   fi
 }
 
+# 语法检查循环：nix-instantiate --parse 通过才继续。
+# 失败时打开 shell 让用户就地修改；没有 TTY 则直接退出，
+# 绝不带着一份错误的 configuration.nix 继续安装。
 parse_check_loop() {
   log_step "$(msg install_parse_check)"
   local config_path="$CONFIG_DIR/configuration.nix"
@@ -1686,9 +1912,13 @@ parse_check_loop() {
   done
 }
 
+# 语义检查 + 构建系统闭包：把 configuration.nix 求值并构建到
+# /nix/var/nix/profiles/system，成功即得到可切换的新系统。
+# 失败时同样允许进 shell 修正后重试。
 semantic_check_loop() {
   log_step "$(msg install_build)"
   local nixpkgs_path nixos_config_path
+  # 显式指定两个 -I，不依赖当前目录，重跑脚本也稳定。
   nixpkgs_path="$(realpath "$HOME/.nix-defexpr/channels/nixos")"
   nixos_config_path="$CONFIG_DIR/configuration.nix"
 
@@ -1707,6 +1937,15 @@ semantic_check_loop() {
   done
 }
 
+# 接管系统，让下次启动进入 NixOS。按顺序：
+#   1. 幂等守卫：/etc/NIXOS 已存在说明接管过，直接返回
+#   2. 清理安装器 profile、把 /etc/resolv.conf 软链换成普通文件
+#   3. 写 /etc/NIXOS 标记与重启后清理脚本
+#   4. 追加 NIXOS_LUSTRATE 条目（原系统会被搬到 /old-root）
+#   5. EFI 时备份 /boot 并重新挂载 ESP
+#   6. switch-to-configuration boot 安装引导程序
+#   7. touch /boot 内核文件，使宿主机引导缓存失效
+#   8. sync 落盘（调用方随后会重启）
 finalize_nixos() {
   # 幂等守卫：接管标记已存在则跳过
   if [ -f /etc/NIXOS ]; then
@@ -1716,20 +1955,29 @@ finalize_nixos() {
 
   log_step "$(msg install_finalize)"
 
+  # 清掉安装器留下的 default profile，避免它和新系统 profile 同时出现在启动菜单。
   rm -fv /nix/var/nix/profiles/default* >/dev/null 2>&1 || true
+  # 清掉安装期产生的临时 profile，减小接管后的 store 体积。
   /nix/var/nix/profiles/system/sw/bin/nix-collect-garbage >/dev/null 2>&1 || true
 
+  # 部分系统的 resolv.conf 是指向 systemd-resolved 存根的软链，NixOS 接管后目标不存在。
   if [ -L /etc/resolv.conf ]; then
     mv -v /etc/resolv.conf /etc/resolv.conf.lnk >/dev/null 2>&1 || true
     cat /etc/resolv.conf.lnk > /etc/resolv.conf 2>/dev/null || true
   fi
 
+  # 幂等标记：再次执行脚本时 finalize_nixos 会据此跳过接管步骤。
   touch /etc/NIXOS
 
   # 写入重启后清理脚本
   write_cleanup_script
 
-  # LUSTRATE 追加 + 去重
+  # LUSTRATE 决定重启后哪些路径从旧系统保留进新系统：
+  #   etc/nixos                    用户配置
+  #   etc/resolv.conf              DNS（安装期可能仍需要）
+  #   root/.nix-defexpr/channels   channel 链接
+  #   root/nixos-infect-cleanup.sh 清理脚本本身
+  #   etc/ssh/ssh_host_*_key*      主机密钥，保持 SSH 指纹不变
   {
     echo etc/nixos
     echo etc/resolv.conf
@@ -1737,6 +1985,7 @@ finalize_nixos() {
     echo root/nixos-infect-cleanup.sh
     (cd / && ls etc/ssh/ssh_host_*_key* 2>/dev/null || true)
   } >> /etc/NIXOS_LUSTRATE
+  # 去重：重复运行或上游已写入相同条目时，LUSTRATE 里不能出现重复路径。
   sort -u -o /etc/NIXOS_LUSTRATE /etc/NIXOS_LUSTRATE
 
   if isEFI; then
@@ -1754,6 +2003,7 @@ finalize_nixos() {
     }
     mkdir -p /boot
     mount "$esp" /boot
+    # 清空新挂载的 ESP：旧发行版的 /boot 内容不再需要，残留内核可能干扰引导。
     find /boot -depth ! -path /boot -exec rm -rf {} + 2>/dev/null || true
   fi
 
@@ -1783,9 +2033,16 @@ finalize_nixos() {
 
 # ===========================================================================
 # SECTION 9: 清理
+# ---------------------------------------------------------------------------
+# 分两段：
+# - 重启前：删除安装期临时文件（探测缓存刻意保留）
+# - 重启后：生成一份由用户手动执行的清理脚本
+# 删除旧系统不可逆，脚本刻意保持「用户确认 + 失败可重跑」。
 # ===========================================================================
 
-# 第一段：重启前
+# 第一段：重启前的清理。
+# 删除安装期临时文件与 nix.conf 备份；dry-run 目录保留给用户查看。
+# PROBE_CACHE 刻意保留，供下次 --skip-probe 复用。
 cleanup_pre_reboot() {
   # 兜底清理历史残留
   rm -f /tmp/nixos-infect.*.swp 2>/dev/null || true
@@ -1794,10 +2051,11 @@ cleanup_pre_reboot() {
   if [ "${DRY_RUN:-0}" != "1" ] && [ -d /tmp/nixos-infect-dryrun ]; then
     rm -rf /tmp/nixos-infect-dryrun 2>/dev/null || true
   fi
-  # PROBE_CACHE 刻意保留，供 --skip-probe 复用
 }
 
-# 第二段：写入重启后执行的清理脚本
+# 第二段：生成重启后由用户手动执行的清理脚本到 /root/nixos-infect-cleanup.sh。
+# 脚本内容用单引号 heredoc 原样写入，生成时不展开变量。
+# 旧系统属于不可逆操作，清理脚本自己负责「自检 + 确认 + 可重跑」。
 write_cleanup_script() {
   cat > "$CLEANUP_SCRIPT" << 'CLEANUP_EOF'
 #!/usr/bin/env bash
@@ -1874,12 +2132,18 @@ CLEANUP_EOF
 
 # ===========================================================================
 # SECTION 10: main + 参数解析
+# ---------------------------------------------------------------------------
+# 参数解析、帮助文本与主流程编排。
+# main 里的调用顺序就是实际安装顺序；参数解析不带副作用，便于单独测试。
 # ===========================================================================
 
+# 解析命令行参数，写入全局开关；未知参数直接报错退出。
+#   - 语言别名 --lang=zh_CN / zh_TW 归一为 zh
 parse_args() {
   local arg
   for arg in "$@"; do
     case "$arg" in
+      # 语言别名统一归一到 en / zh。
       --lang=zh|--lang=zh_CN|--lang=zh_TW) LANG_OPT="zh" ;;
       --lang=en) LANG_OPT="en" ;;
       --verbose) VERBOSE=1 ;;
@@ -1908,6 +2172,7 @@ parse_args() {
         fi
         ;;
       --channel=*) NIX_CHANNEL="${arg#*=}" ;;
+      # 模板覆盖写进关联数组，同类型重复指定以最后一次为准。
       --template=*)
         local spec="${arg#*=}"
         local type="${spec%%:*}"
@@ -1924,6 +2189,8 @@ parse_args() {
   done
 }
 
+# 打印 --help 文本。
+# 参数增删时必须同步：本函数、README 的参数表、docs 下的参数参考。
 show_help() {
   printf 'nixos-infect-cn %s\n\n' "$NIXOS_INFECT_CN_VERSION"
   cat <<'USAGE'
@@ -1971,6 +2238,11 @@ Environment:
 USAGE
 }
 
+# 主流程，调用顺序就是实际安装顺序：
+#   参数 → dry-run 目录 → 探测 → 兜底取值 → 系统信息 → 配置
+#   → 环境预检 → 临时 swap → nix.conf → 安装 Nix → channel
+#   → 语法/语义检查 → 接管 → 清理 → 重启
+# 需要用户确认或允许失败的细节由被调用函数自行处理，main 只表达顺序。
 main() {
   parse_args "$@"
 
@@ -2025,6 +2297,7 @@ main() {
     exit 0
   fi
 
+  # 配置已生成，从这里开始才做会改动系统的操作。
   checkEnv
 
   if [ -z "$NO_SWAP" ] && [ "${zramswap:-true}" != "false" ]; then
@@ -2033,6 +2306,7 @@ main() {
 
   write_nix_conf
 
+  # --no-infect：只做准备（配置、nix.conf、临时 swap），不安装 Nix。
   if [ -n "$NO_INFECT" ]; then
     log_info "NO_INFECT set, skipping installation"
     if [ -z "$NO_SWAP" ] && [ "${zramswap:-true}" != "false" ]; then
@@ -2071,6 +2345,8 @@ main() {
 # 占位符 @@NAME@@ 由 cfg_render 替换。
 # 用户可通过 --template=TYPE:PATH 覆盖。
 # 直接编辑以下内容即可修改默认生成的配置。
+# 注意：本区只放模板文本，不写逻辑；占位符名称必须与 SECTION 7 的
+# cfg_render 调用一致，新增占位符时两处同时修改。
 # ===========================================================================
 
 # --- configuration.nix ---
